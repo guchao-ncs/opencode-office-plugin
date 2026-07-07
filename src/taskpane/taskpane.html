@@ -1,0 +1,65 @@
+<!-- Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT License. -->
+
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Assistant</title>
+
+    <!-- Office JavaScript API -->
+    <script type="text/javascript" src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+
+    <!-- For more information on Fluent UI, visit https://developer.microsoft.com/fluentui#/. -->
+    <link rel="stylesheet" href="https://res-1.cdn.office.net/files/fabric-cdn-prod_20230815.002/office-ui-fabric-core/11.1.0/css/fabric.min.css"/>
+
+    <!-- Template styles -->
+    <link href="taskpane.css" rel="stylesheet" type="text/css" />
+</head>
+
+<body class="ms-font-m ms-welcome ms-Fabric">
+    <section id="sideload-msg" class="ms-welcome__main">
+        <h2 class="ms-font-xl">Please <a target="_blank" href="https://learn.microsoft.com/office/dev/add-ins/testing/test-debug-office-add-ins#sideload-an-office-add-in-for-testing">sideload</a> your add-in to see app body.</h2>
+    </section>
+    <main id="app-body" class="chat-app" style="display: none;">
+        <header class="chat-header">
+            <img width="24" height="24" src="../../assets/icon-32.png" alt="AI Assistant" />
+            <h1 class="ms-font-l">AI Assistant</h1>
+            <button type="button" id="settings-toggle" class="chat-settings-toggle" aria-label="Settings" title="Settings">⚙</button>
+        </header>
+        <section id="settings-panel" class="settings-panel" style="display: none;">
+            <label for="harness-root-input">Harness root directory (optional)</label>
+            <input type="text" id="harness-root-input" class="settings-input" placeholder="C:\path\to\your\agent-harness-folder" />
+            <div class="settings-panel-actions">
+                <button type="button" id="settings-save" class="ms-Button ms-Button--primary">
+                    <span class="ms-Button-label">Generate config</span>
+                </button>
+                <button type="button" id="settings-clear" class="ms-Button">
+                    <span class="ms-Button-label">Clear</span>
+                </button>
+            </div>
+            <p id="settings-status" class="settings-status"></p>
+            <textarea id="settings-snippet" class="settings-snippet" rows="6" readonly style="display: none;"></textarea>
+        </section>
+        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <div id="prompt-ideas-toolbar" class="prompt-ideas-toolbar" style="display: none;">
+            <button type="button" id="prompt-ideas-toggle" class="prompt-ideas-toggle">
+                <span aria-hidden="true">💡</span> Prompt ideas
+            </button>
+        </div>
+        <section id="doc-suggestions-panel" class="doc-suggestions-panel" style="display: none;">
+            <p class="doc-suggestions-label">✨ Explore what's inside your document</p>
+            <div id="doc-suggestions" class="chat-suggestions doc-suggestions"></div>
+        </section>
+        <form id="chat-form" class="chat-input-row">
+            <textarea id="chat-input" class="chat-input" rows="2" placeholder="Ask OpenCode to edit this document..."></textarea>
+            <button type="submit" id="chat-send" class="ms-Button ms-Button--primary chat-send">
+                <span class="ms-Button-label">Send</span>
+            </button>
+        </form>
+    </main>
+</body>
+
+</html>

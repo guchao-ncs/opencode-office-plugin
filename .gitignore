@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.cache/
+*.log
+.DS_Store
+Thumbs.db
+
+# Office Add-in dev certs (per-user, generated locally, never commit)
+*.crt
+*.key
+*.pem
+
+# OpenCode local state
+.opencode/
+
+# Local-only files not meant for the shared repo
+/config.json
+/AllegroGraph_Partnership_Proposal.docx

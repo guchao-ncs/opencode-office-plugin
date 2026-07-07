@@ -1,0 +1,386 @@
+/*
+ * Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+ * See LICENSE in the project root for license information.
+ */
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+.ms-welcome__main {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: center;
+    flex: 1 0 0;
+    padding: 10px 20px;
+}
+
+.chat-app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.chat-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #edebe9;
+    flex: 0 0 auto;
+}
+
+.chat-header h1 {
+    margin: 0;
+    flex: 1 1 auto;
+}
+
+.chat-settings-toggle {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.chat-settings-toggle:hover {
+    background-color: #f3f2f1;
+}
+
+.settings-panel {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #edebe9;
+    background-color: #faf9f8;
+}
+
+.settings-panel label {
+    font-size: 12px;
+    color: #605e5c;
+}
+
+.settings-input {
+    font-family: inherit;
+    font-size: inherit;
+    padding: 6px 8px;
+    border: 1px solid #8a8886;
+    border-radius: 4px;
+}
+
+.settings-panel-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.settings-status {
+    margin: 0;
+    font-size: 12px;
+    min-height: 16px;
+}
+
+.settings-snippet {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11px;
+    padding: 6px 8px;
+    border: 1px solid #8a8886;
+    border-radius: 4px;
+    resize: vertical;
+}
+
+.chat-log {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.chat-message {
+    max-width: 85%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    line-height: 1.4;
+    word-wrap: break-word;
+}
+
+.chat-message p {
+    margin: 0 0 6px 0;
+}
+
+.chat-message p:last-child {
+    margin-bottom: 0;
+}
+
+.chat-message--user {
+    align-self: flex-end;
+    background-color: #0078d7;
+    color: #fff;
+}
+
+.chat-message--assistant {
+    align-self: flex-start;
+    background-color: #f3f2f1;
+    color: #201f1e;
+}
+
+.chat-message--pending {
+    opacity: 0.85;
+}
+
+.chat-message--error {
+    align-self: stretch;
+    background-color: #fde7e9;
+    color: #a80000;
+}
+
+@keyframes chat-pulse-glyph {
+    0%,
+    100% {
+        transform: scale(0.85) rotate(0deg);
+        opacity: 0.6;
+    }
+    50% {
+        transform: scale(1.15) rotate(45deg);
+        opacity: 1;
+    }
+}
+
+@keyframes chat-pulse-text {
+    0%,
+    100% {
+        opacity: 0.55;
+    }
+    50% {
+        opacity: 1;
+    }
+}
+
+/* Collapsible reasoning ("chain of thought") trace shown above the answer
+   text while the model is thinking, and collapsed to a "Thought for Ns"
+   summary once reasoning finishes - click to re-expand and re-read it. */
+.chat-thought {
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+
+.chat-thought-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    font-weight: 400;
+    color: #6e6e6e;
+    cursor: pointer;
+}
+
+.chat-thought--done .chat-thought-summary {
+    color: #8a8886;
+}
+
+.chat-thought:not(.chat-thought--done) .chat-thought-label {
+    animation: chat-pulse-text 1.6s ease-in-out infinite;
+}
+
+/* Status glyph: a violet diamond that breathes (scale + tilt + fade) while
+   busy, and settles to a small static gray dot once finished. */
+.chat-thought-dot {
+    display: inline-block;
+    flex: 0 0 auto;
+    font-size: 12px;
+    line-height: 1;
+    color: #7c5cbf;
+    animation: chat-pulse-glyph 1.3s ease-in-out infinite;
+}
+
+.chat-thought--done .chat-thought-dot {
+    font-size: 8px;
+    color: #a19f9d;
+    animation: none;
+}
+
+.chat-thought-detail {
+    display: none;
+    margin: 4px 0 0 12px;
+    padding-left: 8px;
+    border-left: 2px solid #edebe9;
+    color: #605e5c;
+    font-style: italic;
+}
+
+.chat-thought-detail--open {
+    display: block;
+}
+
+/* One-line indicator for whatever's actively running right now (thinking
+   before any text/tool output has appeared yet, or a tool call in progress). */
+.chat-activity {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 400;
+    color: #6e6e6e;
+}
+
+.chat-activity-icon {
+    display: inline-block;
+    flex: 0 0 auto;
+    font-size: 12px;
+    line-height: 1;
+    color: #7c5cbf;
+    animation: chat-pulse-glyph 1.3s ease-in-out infinite;
+}
+
+.chat-activity-label {
+    animation: chat-pulse-text 1.6s ease-in-out infinite;
+}
+
+/* Copy/👍/👎 row shown under a finished assistant reply. */
+.chat-actions {
+    display: none;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.chat-action-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 4px;
+    color: #605e5c;
+}
+
+.chat-action-btn:hover {
+    background-color: #e8e6e4;
+}
+
+.chat-action-btn[aria-pressed="true"] {
+    background-color: #ded9f0;
+    color: #4b3d78;
+}
+
+/* Follow-up action chips generated after a reply finishes. */
+.chat-suggestions {
+    display: none;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+/* Toggle button (Adobe Acrobat's "💡 Prompt ideas") that re-opens the doc
+   suggestions panel below on demand, after it's been auto-collapsed by
+   sending a message - see togglePromptIdeas() in taskpane.js. Hidden
+   whenever there are no suggestion chips to offer at all (empty document). */
+.prompt-ideas-toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: flex-end;
+    padding: 6px 12px 0 12px;
+}
+
+.prompt-ideas-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: 1px solid #d6cdf0;
+    color: #4b3d78;
+    border-radius: 14px;
+    padding: 4px 10px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.prompt-ideas-toggle:hover {
+    background-color: #ede9f7;
+}
+
+/* Doc-suggestion chip panel: shown automatically on load (non-empty
+   document) and auto-collapsed after the first message is sent, but can be
+   re-opened any time via the "Prompt ideas" toggle above -
+   see initializeDocumentSuggestions()/togglePromptIdeas() in taskpane.js. */
+.doc-suggestions-panel {
+    flex: 0 0 auto;
+    padding: 6px 12px 0 12px;
+}
+
+.doc-suggestions-label {
+    margin: 0 0 6px 0;
+    font-size: 12px;
+    color: #605e5c;
+}
+
+/* Shown briefly inside #doc-suggestions while deriveLibraryPromptIdeas()'s
+   fresh, context-aware library lookup is in flight (see togglePromptIdeas()
+   in taskpane.js). */
+.doc-suggestions-loading {
+    margin: 0;
+    font-size: 12px;
+    font-style: italic;
+    color: #8a8886;
+}
+
+.doc-suggestions {
+    display: flex;
+}
+
+.chat-suggestion-chip {
+    max-width: 100%;
+    text-align: left;
+    background-color: #ede9f7;
+    border: 1px solid #d6cdf0;
+    color: #4b3d78;
+    border-radius: 12px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.chat-suggestion-chip:hover {
+    background-color: #e1d4f7;
+}
+
+.chat-input-row {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px solid #edebe9;
+}
+
+.chat-input {
+    flex: 1 1 auto;
+    resize: none;
+    font-family: inherit;
+    font-size: inherit;
+    padding: 6px 8px;
+    border: 1px solid #8a8886;
+    border-radius: 4px;
+}
+
+.chat-send {
+    flex: 0 0 auto;
+    align-self: flex-end;
+}

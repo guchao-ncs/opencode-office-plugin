@@ -1,0 +1,91 @@
+> **Revision note (2026-07-01):** This PRD's original assumptions about the OpenCode HTTP API (`/v1/chat` on port `8080`) and a hand-built `OfficeMCP`/`run_word_com_automation(script)` arbitrary-code-exec tool were verified to be incorrect or unsafe against the real OpenCode server and the current Office Add-in tooling ecosystem. Sections below have been corrected to the approved Phase 1 architecture: `@microsoft/generator-office` (official Microsoft scaffolding) for FR-1, the real OpenCode `serve` REST API for FR-2, and the vetted open-source `word-mcp-live` MCP server (github.com/ykarapazar/word-mcp-live, MIT) for FR-3, in place of a custom proxy and open code-exec tool. See `README.md` for the as-built setup.
+
+# Role & Context
+You are an expert Senior Full-Stack Engineer and AI Solutions Architect. We are building a localized, non-administrative AI Document Assistant called "AI Assistant" via Vibe Coding.
+
+# Goal
+Create a production-ready, minimal viable product (MVP) that integrates an AI Agent (Open Code) side panel inside Microsoft office word without requiring M365 Global Admin permissions. The solution must support complex document formatting and style manipulation.
+
+If MVP is success, we may expand the side panel to MS Excel and Powerpoint.
+
+# Architectural Constraints (Strict)
+1. Non-Admin Deployment: Must use Office Add-in local Side-loading (Manifest.xml via Trusted Catalogs). No tenant-level deployment.
+2. Security & Data Privacy: All components must run on `localhost`. Front-end side panel communicates with the back-end via local HTTP/WebSocket. Zero enterprise data leaks.
+3. Tech Stack: 
+   - Front-end: Office.js SDK + Vanilla JS (Phase 1; React deferred to a later Excel/PowerPoint expansion phase), served locally over HTTPS via `office-addin-dev-certs` (official Microsoft cert tooling, replaces raw `mkcert`).
+   - Back-end/Agent: OpenCode Core running as a real local server (`opencode serve`, default `http://127.0.0.1:4096`, session/message REST API + OpenAPI spec at `/doc` — **not** an OpenAI-style `/v1/chat` endpoint).
+   - Word Automation: `word-mcp-live` (open-source MCP server, MIT license, github.com/ykarapazar/word-mcp-live), registered as a local MCP server in `opencode.json` and spawned by OpenCode itself over stdio via `uvx --from word-mcp-live word_mcp_server` (the PyPI package `word-mcp-live` provides the `word_mcp_server` executable, not a same-named one). Exposes a fixed, auditable set of Python `pywin32`/COM automation tools — no custom "OfficeMCP" proxy layer and no open arbitrary-code-execution tool.
+
+---
+
+# Product Requirements Document (PRD.md)
+
+## 1. Functional Requirements
+
+### FR-1: Local Manifest Side-loading Setup
+- Generate a standards-compliant `manifest.xml` (XML add-in-only track, not the unified JSON manifest) configured for a Word Taskpane Add-in, via `@microsoft/generator-office` (`npx ... yo office`) rather than hand-writing it.
+- Set `<SourceLocation>` to `https://localhost:3000/index.html`.
+- Use the official `office-addin-dev-certs` / `office-addin-debugging` tooling (wired into the generated `npm start`/`npm stop` scripts) to handle self-signed HTTPS certificate generation and trust, and to spin up / tear down the dev server and sideload registration — no manual `mkcert` step.
+
+### FR-2: Taskpane UI (The Interface)
+- A clean, modern chat interface matching Office Fluent UI design principles.
+- Input box for user queries (e.g., "Generate Section 3 of the tender with 16pt bold dark blue headers").
+- A "Send" button and a real-time streaming markdown-compatible chat log.
+- A bridge that talks directly to OpenCode's real local REST API (`opencode serve`, `http://127.0.0.1:4096`): `POST /session` to create/reuse a session, then `POST /session/{id}/message` to send the user's text. Exact request/response field names must be confirmed against the live OpenAPI spec at `http://127.0.0.1:4096/doc` at implementation time. Note the HTTPS-taskpane-to-HTTP-localhost mixed-content risk in WebView2 must be verified early (see README troubleshooting).
+
+### FR-3: Word Automation via `word-mcp-live` (Complex Layouts)
+- Register `word-mcp-live` (github.com/ykarapazar/word-mcp-live) as a local MCP server in `opencode.json` (`"type": "local"`, `"command": ["uvx", "--from", "word-mcp-live", "word_mcp_server"]`), spawned by OpenCode itself over stdio — not a custom-built MCP server or an open `run_word_com_automation(script)` exec tool.
+- The Windows live-editing tool set (44 tools, `pywin32`/COM against the currently-open `Word.Application` instance) must cover the following capabilities, mapped to word-mcp-live's existing tools:
+  - Heading Styles: Custom font face, specific font sizes (e.g., 16pt), bold states, paragraph spacing (SpaceBefore/SpaceAfter), and RGB color injection — via `add_heading`, `format_text`, `set_paragraph_spacing`, `create_custom_style`.
+  - Table Generation: Multi-row/multi-column creation, setting specific Word table styles (e.g., "Table Grid"), cell shading/background RGB fills, and cell alignment text formatting — via `add_table`, `set_table_cell_shading`, `format_table`.
+  - Text Injection: Reading from current selection range and writing back/replacing text with 1.5 line spacing and custom fonts (e.g., FangSong, Arial) — via `search_and_replace` / `word_live_replace_text`, `format_text`.
+- If any required capability is missing from word-mcp-live's tool set, extend it there (upstream/fork) rather than reintroducing an arbitrary-code-exec tool.
+- Requires Word to already be open (COM `GetActiveObject`); word-mcp-live does not launch Word itself. An optional standalone `scripts/verify_word_com.py` (plain `pywin32`, `GetActiveObject("Word.Application")`) may be kept as a debugging aid, separate from the MCP tool surface.
+
+## 2. System Architecture Workflow
+User inputs prompt in Side Panel UI -> Front-end POSTs to the local OpenCode REST API (`opencode serve`, `http://127.0.0.1:4096`) -> OpenCode processes intent via LLM -> OpenCode invokes a `word-mcp-live` MCP tool over stdio (per its `opencode.json` registration) -> `word-mcp-live` executes `pywin32` COM calls -> Windows COM subsystem physically mutates the active Word document -> Response returns through the OpenCode session API to the Side Panel UI.
+
+---
+
+## 3. Implemented Beyond Original MVP Scope (Chat UX, `src/taskpane/`)
+
+FR-2 originally specified a single blocking `POST /session/{id}/message` round trip. The as-built taskpane has since grown past that baseline:
+
+- **Streaming replies (SSE)**: uses `POST /session/{id}/prompt_async` (fire-and-forget) + `GET /event` (OpenCode's global Server-Sent-Events stream) instead of the blocking endpoint, so the answer renders progressively instead of appearing all at once after a long wait. The blocking endpoint is kept as a fallback if the SSE connection never opens (e.g. CORS misconfigured for `/event`).
+- **Chain-of-thought display**: a collapsible "Thinking..." row shows live reasoning-token deltas while the model thinks, collapsing to "Thought for Ns" once done; a one-line activity indicator shows tool calls in progress (e.g. "Running add_heading..."). Status glyph is a pulsing violet diamond (`◆`), deliberately distinct from Claude Code's CLI spinner style.
+- **Reliability fixes** for a two-part failure class that surfaced as "OpenCode finished without returning any text.":
+  - Multi-step turns (tool-calling splits one user prompt into several assistant `Message` IDs) are now followed across steps instead of finalizing on the first `tool-calls` step boundary.
+  - The Enter-key handler now checks the Send button's `disabled` state before calling `form.requestSubmit()` (which, unlike a button click, does not check button-disabled state on its own) — this closed a race where pressing Enter mid-stream could start a second overlapping turn on the same session.
+  - A `seenAssistantMessageIDs` set, re-seeded from the server's current message list before every send, guards against stale/leftover message events (e.g. a background turn still finishing after a page reload) being mistaken for a new reply.
+- **Configurable harness root (gear icon)**: a settings panel lets the user point the agent at an external "harness" directory (e.g. an Obsidian vault with its own `AGENTS.md`/skills/memory). Because OpenCode's `PATCH /config` endpoint was confirmed (empirically, against a live `opencode serve`) to not persist changes, this generates an `instructions`/`permission.external_directory` JSON snippet for the user to paste into `opencode.json` and restart the server with, rather than silently no-op'ing a live-apply that doesn't work.
+- **Response actions (Copy / 👍 / 👎)**: shown under each finished assistant reply. Copy uses the real Clipboard API; the thumbs are a local-only visual toggle (mutually exclusive) — there is no telemetry backend in this single-user local tool to send the signal to.
+- **Follow-up suggestion chips**: every prompt carries a hidden instruction asking the model to end its answer with a `<!--SUGGESTIONS:[...]-->` marker containing 2 short follow-up questions; the client strips this marker from the displayed text (even mid-stream, so it never visibly leaks) and renders the parsed suggestions as clickable chips that fill and submit the input. This piggybacks on the one reply already being generated, in place of an earlier design that spun up a second throwaway session purely to ask for suggestions — that session paid the full cost of the project's global `instructions` (opencode.json's harness `AGENTS.md`) being reloaded from scratch with zero prompt-cache benefit (confirmed empirically: ~9s and ~13.7k input tokens for a trivial sub-task), roughly doubling the wait before cards appeared. The inline marker removes that entire second round trip.
+- **Automatic "current document" context**: on a session's first message, the taskpane reads the active Word document's full text via the Word JS API (`Word.run(context => context.document.body.getText())`) and sends it as a hidden leading text part alongside the user's actual message — never mixed into the displayed user bubble. Because it lands in that session's message history, it stays available to the model on every later turn without being re-fetched/re-sent each time. This means "summarize the document" no longer gets "Which document would you like me to summarize?" — the model already has it. Falls back to no context (unchanged prior behavior) when `Word.run` isn't available (e.g. non-Word hosts, or the office.js stub used in headless tests).
+- **Current-selection context**: unlike the whole-document snapshot above, whatever text is currently highlighted/selected (`Word.run(context => context.document.getSelection())`) is re-read fresh on *every* message (not just the first) and sent as a second hidden text part, so "revise the selected text"/"summarize this part" resolves to what's actually highlighted right now rather than the model asking which text is meant or falling back to the whole document.
+- **Standing "Track Changes before editing" rule**: every prompt (not just prompt-idea-chip ones) now carries a hidden instruction that any actual document mutation must be preceded by turning on Word's Track Changes/"Revision" mode via `word-mcp-live`'s live toggle tool, so edits stay reviewable rather than being silently applied.
+- **Library-backed, click-triggered "💡 Prompt ideas" panel**: mirrors Adobe Acrobat's Ask AI Assistant panel. A fixed `PROMPT_LIBRARY` of ~14 prompt templates (categorized: Content Generation; Editing, Refining & Rewriting; Analysis, Summarization & Extraction — several containing bracketed placeholders like `[Project/Topic]`) lives in `taskpane.js`. The "Prompt ideas" toggle button appears above the input for any non-empty document, but nothing is precomputed or auto-shown at load — no LLM call happens until the user actually clicks it. Each click (`togglePromptIdeas`) shows a brief "Thinking of ideas..." placeholder, then runs a fresh silent request (`deriveLibraryPromptIdeas`/`buildPromptIdeasParts`, parsed via a `<!--PROMPT_IDEAS:[{"id":...,"text":...}]-->` marker — same silent-turn pattern as the SUGGESTIONS marker) asking the model to pick up to 4 templates that are actually relevant to *this* document and the conversation so far, and derive a concrete, placeholder-free, affirmative-sentence version of each — recomputed on every open (not cached), so it reflects the document/conversation as of that click rather than a load-time snapshot. Two templates (`winning-theme`, `business-value-tone`) carry a fixed `hiddenInstruction` (ask a clarifying question or go straight to plan mode, then propose which sections to revise and why without calling any editing tool) that is looked up locally by the template's `id` once the model picks it — never generated by the model itself, so a classification-style turn can't inject or alter that plan-mode behavior. Chips whose text has effectively already been sent as a real message (tracked via a normalized `sentPromptTexts` list — lowercased, punctuation-stripped, matched by substring containment in either direction) are filtered out before rendering; if that empties the result, the panel just stays collapsed. This supersedes an earlier, simpler iteration of this panel that showed 2 hardcoded chips on load plus a one-off `<!--DOC_KIND:...-->` proposal classifier — folded into the general library-selection call instead, since deciding "is this template relevant" already subsumes "is this a proposal."
+- **MCP timeout hardening**: `opencode.json`'s `word` MCP server entry now sets `"timeout": 90000` (up from the default 30000ms), since a cold `uvx` start (downloading `word-mcp-live`'s ~80 Python dependencies for the first time) was observed to exceed the default timeout and leave the MCP connection in a permanent `"failed"` state for the rest of that `opencode serve` process's life (recoverable at runtime via `POST /mcp/word/connect`, but better avoided outright).
+- **Prompt-ideas request reliability**: the blocking request behind "Prompt ideas" (`sendToOpenCodeBlocking`) previously had no timeout and, on any failure, `deriveLibraryPromptIdeas` silently swallowed the error and returned an empty list — on a slow/uncached model call (observed up to 60s+) the panel just sat on "Thinking of ideas..." with no feedback, indistinguishable from a hang. Fixed with an `AbortController`-based timeout (150s) and by letting the error propagate to `togglePromptIdeas`, which now shows `Couldn't get prompt ideas (<reason>). Click "Prompt ideas" to try again.` instead of failing silently.
+
+These items were modeled on Adobe Acrobat's "Ask AI Assistant" panel (per-response feedback controls + contextual "What can I help with next?" suggestions + implicit document awareness).
+
+## 4. Roadmap — Next Up
+
+Also inspired by Adobe's panel, in rough priority order:
+
+1. **Revisit live harness config** — if a future OpenCode version actually persists `PATCH /config`, replace the copy-paste JSON snippet from §3 with a real live-apply + automatic new-session rollover.
+2. **Re-sync document context mid-conversation** — currently the whole-document snapshot is taken only once, on the session's first message; if the user edits the document significantly partway through a long conversation, the model won't see the update (the per-turn selection context, added since, covers the common "look at this part" case in the meantime). Worth a lighter-weight follow-up once the above are done (e.g. re-reading the document on demand rather than every turn, to avoid ballooning context size).
+3. **Actual plan-mode confirmation flow** — the "winning theme" chip currently relies on the model's own judgment (via a hidden instruction) to hold off on editing until the user confirms a proposed plan; there is no explicit UI-level "Approve"/"Reject" control yet, so confirmation is just the user's next chat message being interpreted in context.
+
+---
+
+# Vibe Coding Execution Instructions
+
+Please generate the codebase step-by-step, per the approved Phase 1 plan (`C:\Users\P1200272\.claude\plans\eager-roaming-beacon.md`):
+
+1. Scaffold the Word Taskpane Add-in with `@microsoft/generator-office` (`yo office`, XML manifest track), producing `manifest.xml`, `package.json`, and the dev-server/cert/sideload scripts — do not hand-write `manifest.xml`.
+2. Register `word-mcp-live` as a local MCP server in `opencode.json` (spawned by `opencode serve` over stdio via `uvx --from word-mcp-live word_mcp_server`) instead of building a custom OpenCode proxy or raw `pywin32` exec tool. Keep an optional standalone `scripts/verify_word_com.py` purely as a `GetActiveObject("Word.Application")` debugging smoke test, not as the production automation path.
+3. Implement the taskpane chat UI (`src/taskpane/`) calling OpenCode's real `/session` and `/session/{id}/message` REST endpoints.
+4. Write a clear `README.md` on how to install dependencies and run the sideloading natively on a Windows machine, including LLM provider setup for OpenCode and the end-to-end verification steps.
+
+Do not write dummy placeholders for the COM automation logic. Prefer extending `word-mcp-live`'s existing, vetted tool set over introducing new open-ended code-execution surfaces. Let's build!

@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx --yes --package @microsoft/generator-office --package yo -- yo office --help)",
+      "Bash(npm view *)",
+      "Bash(npx --yes --package generator-office --package yo -- yo office --help)",
+      "Bash(npx office-addin-manifest *)",
+      "Bash(npx webpack *)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 3000,4096 -State Listen -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 3000,4096,4097,4098,4099 -State Listen -ErrorAction SilentlyContinue)",
+      "Bash(time timeout 60 uvx --from word-mcp-live word_mcp_server --help)",
+      "Bash(opencode mcp *)"
+    ]
+  }
+}
