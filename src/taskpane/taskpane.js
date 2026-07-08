@@ -113,6 +113,11 @@ Office.onReady((info) => {
     document.getElementById("settings-toggle").addEventListener("click", onSettingsToggle);
     document.getElementById("settings-save").addEventListener("click", onSettingsSave);
     document.getElementById("settings-clear").addEventListener("click", onSettingsClear);
+    document.getElementById("tab-btn-settings").addEventListener("click", () => onTabSwitch("settings"));
+    document.getElementById("tab-btn-library").addEventListener("click", () => onTabSwitch("library"));
+    document.getElementById("library-add").addEventListener("click", onLibraryAdd);
+    document.getElementById("library-save").addEventListener("click", onLibrarySave);
+    document.getElementById("library-reset").addEventListener("click", onLibraryReset);
     document.getElementById("prompt-ideas-toggle").addEventListener("click", togglePromptIdeas);
 
     // Tags this document so Word auto-shows the taskpane the next time this same
@@ -199,6 +204,120 @@ function setSettingsStatus(text, isError) {
   const el = document.getElementById("settings-status");
   el.textContent = text;
   el.style.color = isError ? "#a80000" : "#605e5c";
+}
+
+function setLibraryStatus(text, isError) {
+  const el = document.getElementById("library-status");
+  el.textContent = text;
+  el.style.color = isError ? "#a80000" : "#605e5c";
+}
+
+// Switches between the panel's "Settings" and "Prompt library" tabs. The
+// library list is (re-)rendered from localStorage on every switch INTO the
+// library tab, discarding unsaved row edits - saved state is the only truth.
+function onTabSwitch(tab) {
+  const isSettings = tab === "settings";
+  if (!isSettings) {
+    renderPromptLibraryList();
+  }
+  document.getElementById("tab-settings").style.display = isSettings ? "flex" : "none";
+  document.getElementById("tab-library").style.display = isSettings ? "none" : "flex";
+  document.getElementById("tab-btn-settings").classList.toggle("settings-tab--active", isSettings);
+  document.getElementById("tab-btn-library").classList.toggle("settings-tab--active", !isSettings);
+}
+
+// Renders the editable prompt-library rows from the saved library. Each row
+// keeps its template's id (and category) in data attributes so edits preserve
+// identity - which is what keeps a HIDDEN_INSTRUCTIONS behavior attached to
+// an edited built-in template, and lets isPromptAlreadyUsed/dedup work
+// consistently.
+function renderPromptLibraryList() {
+  const list = document.getElementById("prompt-library-list");
+  list.innerHTML = "";
+  for (const prompt of getPromptLibrary()) {
+    list.appendChild(createPromptRow(prompt));
+  }
+}
+
+function createPromptRow(prompt) {
+  const row = document.createElement("div");
+  row.className = "prompt-library-row";
+  row.dataset.promptId = prompt.id;
+  row.dataset.promptCategory = prompt.category || "My prompts";
+  const textarea = document.createElement("textarea");
+  textarea.className = "settings-textarea prompt-library-text";
+  textarea.rows = 2;
+  textarea.value = prompt.template || "";
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "prompt-library-remove";
+  removeBtn.title = "Remove this prompt";
+  removeBtn.setAttribute("aria-label", "Remove this prompt");
+  removeBtn.textContent = "✕";
+  removeBtn.addEventListener("click", () => row.remove());
+
+  const useBtn = document.createElement("button");
+  useBtn.type = "button";
+  useBtn.className = "prompt-library-use";
+  useBtn.title = "Use this prompt";
+  useBtn.setAttribute("aria-label", "Use this prompt");
+  useBtn.textContent = "⤵";
+  useBtn.addEventListener("click", () => {
+    // Stage this prompt (the row's CURRENT text, including unsaved edits)
+    // into the chat input for review/editing - same fill-then-edit behavior
+    // as suggestion chips, including the template's hidden instruction (by
+    // id, from HIDDEN_INSTRUCTIONS - never from editable data). Close the
+    // panel so the staged text is immediately visible.
+    const text = textarea.value.trim();
+    if (!text) {
+      return;
+    }
+    pendingHiddenInstruction = HIDDEN_INSTRUCTIONS[prompt.id] || null;
+    const input = document.getElementById("chat-input");
+    input.value = text;
+    onChatInputChanged();
+    document.getElementById("settings-panel").style.display = "none";
+    input.focus();
+  });
+
+  // Vertical action stack next to the textarea: remove on top, use below it.
+  const actions = document.createElement("div");
+  actions.className = "prompt-library-row-actions";
+  actions.append(removeBtn, useBtn);
+  row.append(textarea, actions);
+  return row;
+}
+
+function onLibraryAdd() {
+  const list = document.getElementById("prompt-library-list");
+  const row = createPromptRow({ id: `user-${Date.now()}`, category: "My prompts", template: "" });
+  list.appendChild(row);
+  row.querySelector("textarea").focus();
+}
+
+function onLibrarySave() {
+  const rows = document.querySelectorAll("#prompt-library-list .prompt-library-row");
+  const library = [];
+  for (const row of rows) {
+    const template = row.querySelector("textarea").value.trim();
+    if (!template) {
+      continue;
+    }
+    library.push({ id: row.dataset.promptId, category: row.dataset.promptCategory, template });
+  }
+  localStorage.setItem(PROMPT_LIBRARY_STORAGE_KEY, JSON.stringify(library));
+  renderPromptLibraryList();
+  setLibraryStatus(
+    `Saved ${library.length} prompt${library.length === 1 ? "" : "s"} - "Prompt ideas" picks from them on its next click.`,
+    false
+  );
+}
+
+function onLibraryReset() {
+  localStorage.setItem(PROMPT_LIBRARY_STORAGE_KEY, JSON.stringify(DEFAULT_PROMPT_LIBRARY));
+  renderPromptLibraryList();
+  setLibraryStatus("Restored the built-in default prompts.", false);
 }
 
 // One-time migration from the pre-rework settings panel, which maintained a
@@ -514,15 +633,15 @@ function buildPromptParts(text, documentContext, selectedText, hiddenInstruction
   return [{ type: "text", text: hidden.join("\n\n") }, { type: "text", text }];
 }
 
-// Fixed library of prompt templates the "💡 Prompt ideas" button draws from
-// (see deriveLibraryPromptIdeas). Bracketed placeholders like [Project/Topic]
-// are never shown to the user as-is - the model is instructed to replace
-// them with real specifics drawn from the current document before a
-// template is turned into a chip. `hiddenInstruction`, where present, is
-// looked up locally by `id` once the model picks that template - it is never
-// generated by the model itself, so a plan-mode behavior like the
-// "winning theme" flow can't be spoofed or altered by a classification turn.
-const PROMPT_LIBRARY = [
+// Default prompt-template library the "💡 Prompt ideas" button draws from
+// (see deriveLibraryPromptIdeas). The LIVE library is user-editable via the
+// gear panel's "Prompt library" tab and lives in localStorage
+// (getPromptLibrary) - this constant only seeds it on first load and backs
+// the "Reset to defaults" button. Bracketed placeholders like
+// [Project/Topic] are never shown to the user as-is - the model is
+// instructed to replace them with real specifics drawn from the current
+// document before a template is turned into a chip.
+const DEFAULT_PROMPT_LIBRARY = [
   // Content Generation
   { id: "exec-summary", category: "Content Generation", template: "Write a business plan executive summary for [Project/Topic]." },
   { id: "apology-email", category: "Content Generation", template: "Draft a formal apology email to a client based on these points: [Point 1, Point 2]." },
@@ -530,28 +649,8 @@ const PROMPT_LIBRARY = [
   { id: "report-outline", category: "Content Generation", template: "Create a detailed report outline on the topic of '[Topic]'." },
 
   // Editing, Refining & Rewriting
-  {
-    id: "winning-theme",
-    category: "Editing, Refining & Rewriting",
-    template: "Revise the document by winning theme, in planning mode.",
-    hiddenInstruction:
-      'The user wants to revise this document based on a "winning theme" but has not told you what it is yet. ' +
-      "First, ask them a clarifying question: what is the winning theme (or key differentiators) they want the " +
-      "document to emphasize. Do NOT propose or make any edits in this reply. Once they answer in a follow-up " +
-      "message, enter plan mode: read the document's actual sections and propose WHICH sections you would revise " +
-      "and WHY, as a numbered list - but do not call any document-editing tool and do not actually change the " +
-      "document until the user explicitly confirms the plan.",
-  },
-  {
-    id: "business-value-tone",
-    category: "Editing, Refining & Rewriting",
-    template: "Revise the document by emphasizing business value, in planning mode.",
-    hiddenInstruction:
-      "The user wants to revise this document to emphasize business value (cost savings, ROI, risk reduction, " +
-      "strategic impact, etc.), in planning mode. Do NOT make any edits yet - first read the document's actual " +
-      "sections and propose WHICH sections you would revise and WHY, as a numbered list. Do not call any " +
-      "document-editing tool and do not actually change the document until the user explicitly confirms the plan.",
-  },
+  { id: "winning-theme", category: "Editing, Refining & Rewriting", template: "Revise the document by winning theme, in planning mode." },
+  { id: "business-value-tone", category: "Editing, Refining & Rewriting", template: "Revise the document by emphasizing business value, in planning mode." },
   { id: "tone-professional", category: "Editing, Refining & Rewriting", template: "Rewrite [a specific paragraph] to sound more professional / persuasive / executive-focused." },
   { id: "condense", category: "Editing, Refining & Rewriting", template: "Condense [specific paragraphs] into a summary under 150 words." },
   { id: "expand", category: "Editing, Refining & Rewriting", template: "Expand [a specific sentence] to include more technical specifications." },
@@ -563,6 +662,51 @@ const PROMPT_LIBRARY = [
   { id: "extract-clauses", category: "Analysis, Summarization & Extraction", template: "Extract all clauses related to '[Topic, e.g. Liability, Payment Terms]' from this contract." },
   { id: "action-items", category: "Analysis, Summarization & Extraction", template: "Review the meeting minutes and list all action items along with their assigned owners." },
 ];
+
+// Per-template hidden instructions, looked up locally by template id once the
+// model picks that template (see deriveLibraryPromptIdeas) - NEVER stored in
+// the editable library data or generated by the model itself, so neither a
+// classification-style model turn nor edited library content can inject or
+// alter a plan-mode behavior. Editing a template's text in the library keeps
+// its id and therefore keeps this behavior; deleting the template drops it.
+const HIDDEN_INSTRUCTIONS = {
+  "winning-theme":
+    'The user wants to revise this document based on a "winning theme" but has not told you what it is yet. ' +
+    "First, ask them a clarifying question: what is the winning theme (or key differentiators) they want the " +
+    "document to emphasize. Do NOT propose or make any edits in this reply. Once they answer in a follow-up " +
+    "message, enter plan mode: read the document's actual sections and propose WHICH sections you would revise " +
+    "and WHY, as a numbered list - but do not call any document-editing tool and do not actually change the " +
+    "document until the user explicitly confirms the plan.",
+  "business-value-tone":
+    "The user wants to revise this document to emphasize business value (cost savings, ROI, risk reduction, " +
+    "strategic impact, etc.), in planning mode. Do NOT make any edits yet - first read the document's actual " +
+    "sections and propose WHICH sections you would revise and WHY, as a numbered list. Do not call any " +
+    "document-editing tool and do not actually change the document until the user explicitly confirms the plan.",
+};
+
+const PROMPT_LIBRARY_STORAGE_KEY = "openCodePromptLibrary";
+
+// The live, user-editable prompt library. Seeds localStorage with the
+// defaults the first time (key absent); an explicitly saved empty library
+// (user deleted every row) stays empty - it is NOT re-seeded, only the
+// "Reset to defaults" button brings the built-ins back.
+function getPromptLibrary() {
+  const raw = localStorage.getItem(PROMPT_LIBRARY_STORAGE_KEY);
+  if (raw !== null) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (p) => p && typeof p.id === "string" && typeof p.template === "string" && p.template.trim()
+        );
+      }
+    } catch {
+      // Corrupted JSON - fall through and re-seed the defaults.
+    }
+  }
+  localStorage.setItem(PROMPT_LIBRARY_STORAGE_KEY, JSON.stringify(DEFAULT_PROMPT_LIBRARY));
+  return DEFAULT_PROMPT_LIBRARY.slice();
+}
 
 // Marker the model is asked to reply with, and ONLY with, for the silent
 // "pick from the prompt library" request triggered by the "Prompt ideas"
@@ -578,7 +722,7 @@ const PROMPT_IDEAS_MARKER_RE = /<!--\s*PROMPT_IDEAS:([\s\S]*?)-->/i;
 // `documentContext` is only passed on the session's first message (isNew) -
 // same gating as the whole-document injection elsewhere - since every later
 // turn on this session already has the document in its own history.
-function buildPromptIdeasParts(documentContext, customization) {
+function buildPromptIdeasParts(documentContext, customization, library) {
   const hidden = [];
   if (customization) {
     hidden.push(customizationHiddenBlock(customization));
@@ -591,15 +735,17 @@ function buildPromptIdeasParts(documentContext, customization) {
       "the user and does not need a conversational answer. Below is a library of prompt templates, each with an " +
       "id and a template (some templates contain bracketed placeholders like [Project/Topic] or [Text] that must " +
       "be replaced, never left in literally). Library:\n" +
-      JSON.stringify(PROMPT_LIBRARY.map(({ id, category, template }) => ({ id, category, template }))) +
+      JSON.stringify(library.map(({ id, category, template }) => ({ id, category, template }))) +
       "\n\nPick up to 4 of the templates most relevant to this specific document and, if applicable, the " +
       "conversation so far in this session - skip any that clearly don't fit (e.g. contract-clause extraction on " +
       "a document that isn't a contract). For each one you pick, derive a concrete, ready-to-send version of its " +
       "template by replacing any bracketed placeholders with real specifics drawn from the document (e.g. an " +
       "actual project or product name found in the text) - never leave a literal placeholder in the output. " +
       "Phrase every derived prompt as an affirmative statement/request, never as a question. If fewer than 2 " +
-      "templates are clearly specific to this document, fill the remaining slots with generally useful ones " +
-      "(summarizing, proofreading) so at least 2 are always returned. Reply with ONLY one line, containing " +
+      "templates are clearly specific to this document, fill the remaining slots with the most generally useful " +
+      "remaining LIBRARY templates (e.g. summarizing, proofreading) so at least 2 are returned whenever the " +
+      "library has that many - never invent templates or ids that are not in the library. Reply with ONLY one " +
+      "line, containing " +
       'exactly: <!--PROMPT_IDEAS:[{"id":"...","text":"..."}, ...]--> as a JSON array referencing each chosen ' +
       'template\'s exact "id" from the library above, with "text" being the fully derived sentence. No other text.'
   );
@@ -670,11 +816,19 @@ async function initializeDocumentSuggestions() {
 // togglePromptIdeas) so its picks reflect the document's current content and
 // the conversation so far, not a stale snapshot from taskpane load. Sends a
 // silent request (see buildPromptIdeasParts) asking the model to choose up
-// to 4 templates from PROMPT_LIBRARY and derive a concrete, filled-in
+// to 4 templates from the live, user-editable prompt library
+// (getPromptLibrary - re-read on every click, so library edits apply from
+// the next click with no session reset) and derive a concrete, filled-in
 // sentence for each; each returned template id is looked up locally so a
 // chip's hiddenInstruction (e.g. the "winning theme" plan-mode flow) always
 // comes from our own fixed library, never from the model's own output.
 async function deriveLibraryPromptIdeas() {
+  const library = getPromptLibrary();
+  if (library.length === 0) {
+    // Nothing to pick from - skip the LLM round trip entirely.
+    // togglePromptIdeas pre-checks this case to show a specific message.
+    return [];
+  }
   const documentContext = await getActiveDocumentText();
   if (!documentContext || !documentContext.trim()) {
     return [];
@@ -687,7 +841,7 @@ async function deriveLibraryPromptIdeas() {
   const { id: sid, isNew } = await ensureSession();
   const raw = await sendToOpenCodeBlocking(
     sid,
-    buildPromptIdeasParts(isNew ? documentContext : null, isNew ? getSavedCustomization() : null),
+    buildPromptIdeasParts(isNew ? documentContext : null, isNew ? getSavedCustomization() : null, library),
     150000
   );
   const match = raw.match(PROMPT_IDEAS_MARKER_RE);
@@ -717,11 +871,11 @@ async function deriveLibraryPromptIdeas() {
     if (!item || typeof item.id !== "string" || typeof item.text !== "string" || !item.text.trim()) {
       continue;
     }
-    const template = PROMPT_LIBRARY.find((t) => t.id === item.id);
+    const template = library.find((t) => t.id === item.id);
     if (!template) {
       continue;
     }
-    chips.push({ label: item.text.trim(), text: item.text.trim(), hiddenInstruction: template.hiddenInstruction || null });
+    chips.push({ label: item.text.trim(), text: item.text.trim(), hiddenInstruction: HIDDEN_INSTRUCTIONS[item.id] || null });
   }
   return chips.slice(0, 4);
 }
@@ -797,6 +951,20 @@ async function togglePromptIdeas() {
 
   const toggleBtn = document.getElementById("prompt-ideas-toggle");
   const container = document.getElementById("doc-suggestions");
+
+  // Pre-check: with an emptied-out prompt library there is nothing the model
+  // could pick from, so say that specifically instead of a generic "no ideas".
+  if (getPromptLibrary().length === 0) {
+    container.innerHTML = "";
+    const emptyEl = document.createElement("p");
+    emptyEl.className = "doc-suggestions-loading";
+    emptyEl.textContent = 'Prompt library is empty - add prompts via the gear icon\'s "Prompt library" tab.';
+    container.appendChild(emptyEl);
+    container.style.display = "flex";
+    panel.style.display = "block";
+    return;
+  }
+
   promptIdeasLoading = true;
   toggleBtn.disabled = true;
   container.innerHTML = "";

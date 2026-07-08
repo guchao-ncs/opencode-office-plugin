@@ -136,11 +136,12 @@ against the COM object) specifically because `word-mcp-live` exposes a
 apply shading, replace selection, etc.) with tracked-changes support,
 instead of an open code-execution surface.
 
-### 3.4 Settings panel (gear icon): System Instruction & Persona
+### 3.4 Settings panel (gear icon): System Instruction, Persona & Prompt library
 
 The task pane's settings panel (`#settings-toggle`/`#settings-panel` in
-`taskpane.html`) maintains two per-user fields — **System Instruction**
-(standing rules) and **Persona** (identity/tone) — stored in
+`taskpane.html`) has two tabs. The **Settings** tab maintains two per-user
+fields — **System Instruction** (standing rules) and **Persona**
+(identity/tone) — stored in
 `localStorage` (keys `openCodeSystemInstruction`/`openCodePersona`). When
 either is set, it is injected as a hidden instruction on each new
 session's **first message** (`customizationHiddenBlock` in `taskpane.js`,
@@ -163,6 +164,23 @@ root directory" path (injected via an equivalent hidden block). A one-time
 migration (`migrateLegacyHarnessSetting`) rewrites a saved legacy path
 into the equivalent read-and-follow System Instruction, then deletes the
 legacy `openCodeHarnessRoot` key.
+
+The **Prompt library** tab makes the "Prompt ideas" template library
+user-editable. The live library lives in `localStorage` (key
+`openCodePromptLibrary`, seeded from `DEFAULT_PROMPT_LIBRARY` in
+`taskpane.js` on first load) and is re-read by `deriveLibraryPromptIdeas`
+on every 💡 click, so edits apply from the next click with no session
+reset. Rows keep their template `id` through edits; the two plan-mode
+hidden instructions are deliberately **not** part of the editable data —
+they stay in code (`HIDDEN_INSTRUCTIONS`, keyed by template id), so
+neither a model turn nor edited library content can inject or alter a
+hidden behavior: editing a built-in template's wording keeps its plan-mode
+flow, deleting the template drops it. An explicitly saved empty library
+stays empty (the 💡 button then explains itself instead of calling the
+LLM); "Reset to defaults" restores the built-ins. Each row also has a ⤵
+"Use it" button that stages the row's current text into the chat input
+(same fill-then-edit behavior as suggestion chips, hidden instruction
+included by id) and closes the panel.
 
 ## 4. Security posture
 

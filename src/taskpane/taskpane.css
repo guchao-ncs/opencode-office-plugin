@@ -69,8 +69,7 @@ body {
     color: #605e5c;
 }
 
-/* Tab-style header row for the settings panel (single "Settings" tab for
-   now - styled as a tab so more can be added later without a redesign). */
+/* Tab header row for the settings panel ("Settings" | "Prompt library"). */
 .settings-tab-row {
     display: flex;
     gap: 4px;
@@ -79,16 +78,37 @@ body {
 }
 
 .settings-tab {
+    background: none;
+    border: none;
+    cursor: pointer;
     padding: 4px 12px 6px 12px;
+    font: inherit;
     font-size: 12px;
     font-weight: 600;
     color: #605e5c;
+}
+
+.settings-tab:hover {
+    color: #201f1e;
 }
 
 .settings-tab--active {
     color: #201f1e;
     border-bottom: 2px solid #0078d7;
     margin-bottom: -1px;
+}
+
+/* Each tab's content: same stacked layout the panel itself uses. */
+.settings-tab-content {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.settings-hint {
+    margin: 0;
+    font-size: 12px;
+    color: #605e5c;
 }
 
 .settings-textarea {
@@ -98,6 +118,66 @@ body {
     border: 1px solid #8a8886;
     border-radius: 4px;
     resize: vertical;
+}
+
+/* Editable prompt-library rows (gear panel's "Prompt library" tab). */
+.prompt-library-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+
+.prompt-library-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.prompt-library-text {
+    flex: 1 1 auto;
+}
+
+.prompt-library-remove {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    padding: 6px 4px;
+    color: #605e5c;
+    border-radius: 4px;
+}
+
+.prompt-library-remove:hover {
+    background-color: #fde7e9;
+    color: #a80000;
+}
+
+/* Vertical action stack beside each prompt row: ✕ remove on top, ⤵ use below. */
+.prompt-library-row-actions {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.prompt-library-use {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 5px 4px;
+    color: #605e5c;
+    border-radius: 4px;
+}
+
+.prompt-library-use:hover {
+    background-color: #ede9f7;
+    color: #4b3d78;
 }
 
 .settings-panel-actions {

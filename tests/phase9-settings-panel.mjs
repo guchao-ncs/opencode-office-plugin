@@ -129,6 +129,92 @@ async function main() {
     failures.push(`localStorage still has settings after Clear: ${JSON.stringify(storedAfterClear)}`);
   }
 
+  // --- Prompt library tab: seeded defaults, edit/delete/add, save, reset ---
+  await page.click("#tab-btn-library");
+  const libraryVisible = await page.$eval("#tab-library", (el) => getComputedStyle(el).display !== "none");
+  const settingsHidden = await page.$eval("#tab-settings", (el) => getComputedStyle(el).display === "none");
+  if (!libraryVisible || !settingsHidden) {
+    failures.push("clicking the Prompt library tab did not switch tab contents");
+  }
+
+  const seededCount = await page.$$eval("#prompt-library-list .prompt-library-row", (rows) => rows.length);
+  if (seededCount < 10) {
+    failures.push(`prompt library was not seeded with the built-in defaults: only ${seededCount} rows`);
+  }
+
+  // Edit the first row, delete the second, add a new one, then save.
+  const EDITED_TEXT = "Summarize the entire document into exactly 3 bullet points.";
+  const ADDED_TEXT = "Translate the executive summary into Mandarin.";
+  await page.$$eval("#prompt-library-list .prompt-library-row textarea", (areas, edited) => {
+    areas[0].value = edited;
+  }, EDITED_TEXT);
+  await page.$$eval("#prompt-library-list .prompt-library-row .prompt-library-remove", (btns) => btns[1].click());
+  await page.click("#library-add");
+  await page.$$eval("#prompt-library-list .prompt-library-row textarea", (areas, added) => {
+    areas[areas.length - 1].value = added;
+  }, ADDED_TEXT);
+  await page.click("#library-save");
+
+  const savedLibrary = await page.evaluate(() => JSON.parse(localStorage.getItem("openCodePromptLibrary")));
+  if (!Array.isArray(savedLibrary)) {
+    failures.push("openCodePromptLibrary was not saved as a JSON array");
+  } else {
+    if (savedLibrary.length !== seededCount) {
+      // seeded - 1 deleted + 1 added = seeded
+      failures.push(`saved library has ${savedLibrary.length} prompts, expected ${seededCount} (delete one, add one)`);
+    }
+    if (!savedLibrary.some((p) => p.template === EDITED_TEXT)) {
+      failures.push("edited prompt text was not saved to the library");
+    }
+    const added = savedLibrary.find((p) => p.template === ADDED_TEXT);
+    if (!added) {
+      failures.push("newly added prompt was not saved to the library");
+    } else if (!/^user-/.test(added.id)) {
+      failures.push(`newly added prompt got id "${added.id}", expected a user-* id`);
+    }
+  }
+
+  // Reload: library persists and re-renders from localStorage.
+  await page.reload({ waitUntil: "load" });
+  await page.waitForSelector("#settings-toggle", { state: "visible" });
+  await page.click("#settings-toggle");
+  await page.click("#tab-btn-library");
+  const persistedEdited = await page.$$eval(
+    "#prompt-library-list .prompt-library-row textarea",
+    (areas) => areas.map((a) => a.value)
+  );
+  if (!persistedEdited.includes(EDITED_TEXT) || !persistedEdited.includes(ADDED_TEXT)) {
+    failures.push("library edits did not persist across reload");
+  }
+
+  // "Use it" (⤵) stages that row's prompt into the chat input and closes
+  // the panel, same fill-then-edit behavior as suggestion chips.
+  const firstRowText = await page.$eval("#prompt-library-list .prompt-library-row textarea", (el) => el.value);
+  await page.click("#prompt-library-list .prompt-library-row .prompt-library-use");
+  const stagedInput = await page.$eval("#chat-input", (el) => el.value);
+  if (stagedInput !== firstRowText) {
+    failures.push(`"Use it" did not stage the prompt into the chat input: got "${stagedInput.slice(0, 80)}"`);
+  }
+  const panelClosedAfterUse = await page.$eval("#settings-panel", (el) => getComputedStyle(el).display === "none");
+  if (!panelClosedAfterUse) {
+    failures.push('"Use it" should close the settings panel so the staged prompt is visible');
+  }
+  await page.click("#settings-toggle");
+  await page.click("#tab-btn-library");
+
+  // Reset to defaults restores the built-in set: no user-added prompts, no
+  // edited text, and the same row count as the original seeding.
+  await page.click("#library-reset");
+  const resetLibrary = await page.evaluate(() => JSON.parse(localStorage.getItem("openCodePromptLibrary")));
+  if (
+    !Array.isArray(resetLibrary) ||
+    resetLibrary.length !== seededCount ||
+    resetLibrary.some((p) => /^user-/.test(p.id)) ||
+    resetLibrary.some((p) => p.template === EDITED_TEXT)
+  ) {
+    failures.push("Reset to defaults did not restore the built-in library");
+  }
+
   if (consoleErrors.length > 0) {
     failures.push(`browser console errors: ${JSON.stringify(consoleErrors)}`);
   }
@@ -139,7 +225,9 @@ async function main() {
     console.error("FAIL:\n" + failures.map((f) => `  - ${f}`).join("\n"));
     process.exit(1);
   }
-  console.log("PASS: Settings panel (gear icon: System Instruction + Persona, migration, persist, clear) works");
+  console.log(
+    "PASS: Settings panel (System Instruction + Persona + editable Prompt library: seed, edit, delete, add, persist, reset) works"
+  );
 }
 
 main().catch((err) => {

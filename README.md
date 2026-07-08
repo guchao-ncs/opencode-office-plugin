@@ -154,10 +154,10 @@ correctly with:
 opencode mcp list
 ```
 
-## Optional: System Instruction & Persona (gear icon)
+## Optional: System Instruction, Persona & Prompt library (gear icon)
 
-The task pane's header has a gear icon (⚙) that opens a Settings panel
-with two fields:
+The task pane's header has a gear icon (⚙) that opens a panel with two
+tabs. The **Settings** tab has two fields:
 
 - **System Instruction** — standing rules the assistant must follow in
   every conversation (e.g. "Always reply in formal English. Focus on
@@ -172,6 +172,19 @@ the start. No server restart is needed; changing and re-saving applies
 from the very next message. **Clear** wipes both fields — new
 conversations go back to default behavior. The fields are stored in the
 browser's `localStorage` (per machine/user, not per document).
+
+The **Prompt library** tab maintains the prompt templates that the 💡
+"Prompt ideas" button picks from: the built-in templates are seeded on
+first load and are fully editable — change any template's text, delete
+ones you never use, or **+ Add** your own (placeholders like `[Topic]` are
+fine; the assistant fills them in with document specifics before showing a
+suggestion). Each row also has a ⤵ **Use it** button (below the ✕ remove
+button) that stages that prompt straight into the chat input — edit it if
+needed, then send. **Save library** applies from the next "Prompt ideas"
+click — no restart, no new conversation needed. **Reset to defaults**
+restores the built-in set. Note the two "planning mode" templates (winning theme /
+business value) carry their plan-mode behavior by template *identity*, so
+editing their wording keeps that behavior, while deleting them removes it.
 
 Advanced: because this project's `opencode.json` sets
 `permission.external_directory: "allow"`, a System Instruction can also
@@ -207,7 +220,7 @@ Or run a single phase, e.g. `.\tests\phase3-opencode-server.ps1`.
 | `phase6-word-mutation.ps1` | `opencode run` actually mutates a live Word document (adds a heading + table) through `word-mcp-live`, verified via COM afterward |
 | `phase7-readme.ps1` | README.md documents the operational details from earlier phases |
 | `phase8-autostart.ps1` | manifest/taskpane autoopen wiring, plus a real functional round trip of `start-background-services.ps1` and `install-autostart.ps1`/`uninstall-autostart.ps1` |
-| `phase9-settings-panel.ps1` (+ `phase9-settings-panel.mjs`) | the gear-icon Settings panel: opens, saves/re-fills System Instruction & Persona via `localStorage` across reloads, migrates the legacy harness-root setting, and Clear wipes everything — driven headlessly via `playwright-core`, no `opencode serve` needed since the panel is pure client-side |
+| `phase9-settings-panel.ps1` (+ `phase9-settings-panel.mjs`) | the gear-icon panel: Settings tab (saves/re-fills System Instruction & Persona across reloads, legacy harness-root migration, Clear) and Prompt library tab (default seeding, edit/delete/add, persistence, reset to defaults) — driven headlessly via `playwright-core`, no `opencode serve` needed since the panel is pure client-side |
 
 Phase 5, 6, 8, and 9 spin up real background processes (dev server, `opencode
 serve`) and, for Phase 6, a real visible Word window — they are integration

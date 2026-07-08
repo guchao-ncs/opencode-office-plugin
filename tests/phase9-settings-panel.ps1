@@ -21,7 +21,7 @@ try {
         $failures += "src\taskpane\taskpane.html not found at $taskpaneHtmlPath"
     } else {
         $htmlContent = Get-Content $taskpaneHtmlPath -Raw
-        foreach ($id in @("settings-toggle", "system-instruction-input", "persona-input", "settings-save", "settings-clear")) {
+        foreach ($id in @("settings-toggle", "system-instruction-input", "persona-input", "settings-save", "settings-clear", "tab-btn-settings", "tab-btn-library", "prompt-library-list", "library-add", "library-save", "library-reset")) {
             if ($htmlContent -notmatch [regex]::Escape("id=`"$id`"")) {
                 $failures += "taskpane.html is missing an element with id=`"$id`""
             }
@@ -35,6 +35,9 @@ try {
         $jsContent = Get-Content $taskpaneJsPath -Raw
         if ($jsContent -notmatch [regex]::Escape("customizationHiddenBlock")) {
             $failures += "taskpane.js does not define customizationHiddenBlock"
+        }
+        if ($jsContent -notmatch [regex]::Escape("getPromptLibrary")) {
+            $failures += "taskpane.js does not define getPromptLibrary"
         }
         if ($jsContent -match [regex]::Escape("method: `"PATCH`"")) {
             $failures += "taskpane.js still issues a PATCH request - this was found to silently not persist against a real opencode serve instance and should not be relied on"
@@ -84,7 +87,7 @@ try {
 }
 
 if ($failures.Count -eq 0) {
-    Write-Host "PASS: Phase 9 settings panel checks (System Instruction + Persona)" -ForegroundColor Green
+    Write-Host "PASS: Phase 9 settings panel checks (System Instruction + Persona + Prompt library)" -ForegroundColor Green
     exit 0
 } else {
     Write-Host "FAIL: Phase 9 settings panel checks" -ForegroundColor Red
