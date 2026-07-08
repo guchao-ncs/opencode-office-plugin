@@ -136,32 +136,33 @@ against the COM object) specifically because `word-mcp-live` exposes a
 apply shading, replace selection, etc.) with tracked-changes support,
 instead of an open code-execution surface.
 
-### 3.4 Harness root (gear icon): live per-session read
+### 3.4 Settings panel (gear icon): System Instruction & Persona
 
 The task pane's settings panel (`#settings-toggle`/`#settings-panel` in
-`taskpane.html`) lets a user type the path to an external folder — e.g. an
-agent-harness/Obsidian-vault project with its own `AGENTS.md` — and have
-the agent actually follow it, live. The saved path (`localStorage`, key
-`openCodeHarnessRoot`) is injected as a hidden instruction on each new
-session's **first message** (`harnessHiddenBlock` in `taskpane.js`, same
-first-message-only gating as the whole-document context): the agent is told
-to read the folder's instruction files (`AGENTS.md` and whatever it
-references — `SOUL.md`, `USER.md`, `memory/`, `skills/`) with its own file
-tools and adopt them for the whole conversation. Save/Clear reset the
-cached `sessionId`, so the change applies from the very next message.
+`taskpane.html`) maintains two per-user fields — **System Instruction**
+(standing rules) and **Persona** (identity/tone) — stored in
+`localStorage` (keys `openCodeSystemInstruction`/`openCodePersona`). When
+either is set, it is injected as a hidden instruction on each new
+session's **first message** (`customizationHiddenBlock` in `taskpane.js`,
+same first-message-only gating as the whole-document context), so the
+agent behaves accordingly from the very start of every conversation.
+Save/Clear reset the cached `sessionId`, so changes apply from the very
+next message — no server restart.
 
-The agent-reads-the-files design (rather than injecting the config
-server-side at runtime) was forced by the `PATCH /config` finding in §5,
-and depends on `opencode.json`'s blanket
+The client-side injection design (rather than applying settings to the
+server config at runtime) was forced by the `PATCH /config` finding in §5.
+A System Instruction can also direct the agent at local folders (e.g.
+"read this agent-harness directory and follow its AGENTS.md"), which works
+because of `opencode.json`'s blanket
 `permission.external_directory: "allow"` (§4) — without it the agent's
 first read of an external path would raise an approval prompt the chat UI
 cannot answer, hanging the request.
 
-The panel also still generates the optional
-`instructions`/`permission.external_directory` JSON snippet to paste into
-`opencode.json` (restart required) — that wires `AGENTS.md` into every
-session's system prompt at the server level, a stronger form of the same
-idea for a harness path that never changes.
+This panel replaced an earlier design that maintained a single "harness
+root directory" path (injected via an equivalent hidden block). A one-time
+migration (`migrateLegacyHarnessSetting`) rewrites a saved legacy path
+into the equivalent read-and-follow System Instruction, then deletes the
+legacy `openCodeHarnessRoot` key.
 
 ## 4. Security posture
 
@@ -190,16 +191,18 @@ idea for a harness path that never changes.
 - **`opencode.json` grants blanket external-directory access.**
   `permission.external_directory: "allow"` (a global allow, not scoped to
   one folder) lets the agent's `read`/`write`/`edit`/`bash` tools read and
-  modify **any local path**, not just the project or the configured harness
-  folder. This is a deliberate posture, not an oversight: `opencode`'s
+  modify **any local path**, not just the project folder or a folder a
+  System Instruction points at. This is a deliberate posture, not an
+  oversight: `opencode`'s
   tools are not sandboxed to the project's working directory, an approval
   prompt can't be answered from the chat UI (the request would silently
   hang), and a per-path grant can't be applied at runtime because
   `PATCH /config` doesn't persist (§5) — while the gear panel (§3.4) must
-  work for whatever path the user types without a server restart. The
-  mitigating context is that this is a local, single-user tool whose agent
-  only acts on the user's own prompts. There is also no path-validation
-  allowlist on the settings panel input — intentional, for the same reason.
+  support System Instructions that point the agent at arbitrary local
+  folders without a server restart. The mitigating context is that this is
+  a local, single-user tool whose agent only acts on the user's own
+  prompts. There is also no validation of what the user can put in the
+  settings fields — intentional, for the same reason.
 
 ## 5. Notable findings from implementation
 
@@ -236,20 +239,18 @@ idea for a harness path that never changes.
   trying to undo the persistent registration.
 
 - **`PATCH /config` does not persist anything, despite what the docs
-  imply.** While building the gear-icon harness config feature (§3.4), a
+  imply.** While building the gear-icon settings feature (§3.4, at the
+  time a harness-root config), a
   live `opencode serve` instance (v1.16.2) was tested directly with `curl`:
   `PATCH /config` returns `HTTP 200` and echoes the request body back (or
   `HTTP 500 UnknownError` for payloads containing Windows-style backslash
   paths), but a subsequent `GET /config` showed the change was never
   actually applied — confirmed even for a trivial control field
   (`username`), with and without `?directory=`/`?workspace=` query
-  params. Because of this, the harness feature does **not** attempt a
-  runtime patch. It was first redesigned to only generate a snippet for the
-  user to paste into the static `opencode.json` (opencode's normal, working
-  startup config-loading path), and later given a live mode that sidesteps
-  server config entirely: a hidden first-message instruction makes the
-  agent read the harness files itself (§3.4), enabled by a blanket
-  `external_directory: "allow"` in the static config (§4).
+  params. Because of this, the settings feature does **not** attempt a
+  runtime patch — it sidesteps server config entirely with a hidden
+  first-message instruction (§3.4), enabled where file access is involved
+  by a blanket `external_directory: "allow"` in the static config (§4).
 
 ## 6. Testing strategy
 

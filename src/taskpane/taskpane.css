@@ -69,12 +69,35 @@ body {
     color: #605e5c;
 }
 
-.settings-input {
+/* Tab-style header row for the settings panel (single "Settings" tab for
+   now - styled as a tab so more can be added later without a redesign). */
+.settings-tab-row {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid #edebe9;
+    margin-bottom: 4px;
+}
+
+.settings-tab {
+    padding: 4px 12px 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #605e5c;
+}
+
+.settings-tab--active {
+    color: #201f1e;
+    border-bottom: 2px solid #0078d7;
+    margin-bottom: -1px;
+}
+
+.settings-textarea {
     font-family: inherit;
     font-size: inherit;
     padding: 6px 8px;
     border: 1px solid #8a8886;
     border-radius: 4px;
+    resize: vertical;
 }
 
 .settings-panel-actions {
@@ -86,15 +109,6 @@ body {
     margin: 0;
     font-size: 12px;
     min-height: 16px;
-}
-
-.settings-snippet {
-    font-family: Consolas, "Courier New", monospace;
-    font-size: 11px;
-    padding: 6px 8px;
-    border: 1px solid #8a8886;
-    border-radius: 4px;
-    resize: vertical;
 }
 
 .chat-log {

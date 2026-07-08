@@ -154,36 +154,37 @@ correctly with:
 opencode mcp list
 ```
 
-## Optional: connecting an external "harness" folder (gear icon)
+## Optional: System Instruction & Persona (gear icon)
 
-The task pane's header has a gear icon (⚙) that opens a small settings
-panel where you can type the path to any other local folder — for example
-an Obsidian vault or agent-harness project that has its own `AGENTS.md` —
-and click **Generate config** to save it. **This takes effect live**: from
-your next message onward, each new conversation's first message carries a
-hidden instruction telling the agent to read that folder's instruction
-files (`AGENTS.md`, plus whatever it references — `SOUL.md`, `USER.md`,
-`memory/`, `skills/`, …) with its own file tools and follow them for the
-whole conversation. No server restart is needed, and changing the path
-applies from the very next message. Click **Clear** to stop new
-conversations from using any harness.
+The task pane's header has a gear icon (⚙) that opens a Settings panel
+with two fields:
 
-This works because this project's `opencode.json` sets
-`permission.external_directory: "allow"`, which lets the agent's
-`read`/`write`/`edit`/`bash` tools touch paths outside the project folder
-without an approval prompt (the chat UI has no way to answer one — the
-request would hang). Note that this grants **full read/write access to any
-local path**, not just the harness folder — an acceptable posture for a
-local, single-user tool where the agent only acts on your own prompts, but
-worth knowing. (A per-path grant can't be applied at runtime because
-opencode's `PATCH /config` doesn't persist anything — see
-`tech-design-spec.md` §5.)
+- **System Instruction** — standing rules the assistant must follow in
+  every conversation (e.g. "Always reply in formal English. Focus on
+  tender/proposal quality.").
+- **Persona** — who the assistant should be (e.g. "You are a senior bid
+  manager at NCS with 15 years of government-tender experience.").
 
-The panel also still generates an optional JSON snippet
-(`instructions` + a per-path permission) you can paste into `opencode.json`
-and restart `opencode serve` with — that loads `AGENTS.md` into every
-session's system prompt at the server level, instead of (or in addition to)
-the per-conversation live read above.
+Click **Save** and the settings **take effect live**: from your next
+message onward, each new conversation's first message carries a hidden
+instruction with these two fields, so the agent behaves accordingly from
+the start. No server restart is needed; changing and re-saving applies
+from the very next message. **Clear** wipes both fields — new
+conversations go back to default behavior. The fields are stored in the
+browser's `localStorage` (per machine/user, not per document).
+
+Advanced: because this project's `opencode.json` sets
+`permission.external_directory: "allow"`, a System Instruction can also
+tell the agent to read local folders — e.g. "Read the agent-harness
+directory at C:\\path\\to\\vault (AGENTS.md, SOUL.md, memory/) and follow
+it." (If you had configured a harness root directory in the panel's
+earlier design, it is migrated into exactly such a System Instruction
+automatically, once.) Note that `external_directory: "allow"` grants the
+agent's `read`/`write`/`edit`/`bash` tools **full read/write access to any
+local path** — an acceptable posture for a local, single-user tool where
+the agent only acts on your own prompts, but worth knowing. (A per-path
+grant can't be applied at runtime because opencode's `PATCH /config`
+doesn't persist anything — see `tech-design-spec.md` §5.)
 
 ## Testing
 
@@ -206,7 +207,7 @@ Or run a single phase, e.g. `.\tests\phase3-opencode-server.ps1`.
 | `phase6-word-mutation.ps1` | `opencode run` actually mutates a live Word document (adds a heading + table) through `word-mcp-live`, verified via COM afterward |
 | `phase7-readme.ps1` | README.md documents the operational details from earlier phases |
 | `phase8-autostart.ps1` | manifest/taskpane autoopen wiring, plus a real functional round trip of `start-background-services.ps1` and `install-autostart.ps1`/`uninstall-autostart.ps1` |
-| `phase9-harness-config.ps1` (+ `phase9-harness-config.mjs`) | the gear-icon settings panel: opens, generates a correct `opencode.json` snippet, persists/re-fills the typed path via `localStorage` across reloads, and Clear wipes it — driven headlessly via `playwright-core`, no `opencode serve` needed since this is a pure client-side feature |
+| `phase9-settings-panel.ps1` (+ `phase9-settings-panel.mjs`) | the gear-icon Settings panel: opens, saves/re-fills System Instruction & Persona via `localStorage` across reloads, migrates the legacy harness-root setting, and Clear wipes everything — driven headlessly via `playwright-core`, no `opencode serve` needed since the panel is pure client-side |
 
 Phase 5, 6, 8, and 9 spin up real background processes (dev server, `opencode
 serve`) and, for Phase 6, a real visible Word window — they are integration

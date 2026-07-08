@@ -50,7 +50,14 @@ marked.use({
   },
 });
 
-const HARNESS_ROOT_STORAGE_KEY = "openCodeHarnessRoot";
+// Storage keys for the gear-icon Settings panel. The two fields are injected
+// as a hidden instruction on each new session's first message (see
+// customizationHiddenBlock). LEGACY_HARNESS_STORAGE_KEY is the pre-rework
+// "harness root directory" path - migrated into a System Instruction once,
+// then removed (see migrateLegacyHarnessSetting).
+const SYSTEM_INSTRUCTION_STORAGE_KEY = "openCodeSystemInstruction";
+const PERSONA_STORAGE_KEY = "openCodePersona";
+const LEGACY_HARNESS_STORAGE_KEY = "openCodeHarnessRoot";
 
 // Playful rotating status words shown while waiting on the model, in the
 // style of Claude Code's CLI status line ("Pontificating...", "Sussing...").
@@ -113,11 +120,14 @@ Office.onReady((info) => {
     Office.context.document.settings.set("Office.AutoShowTaskpaneWithDocument", true);
     Office.context.document.settings.saveAsync();
 
-    // Re-fill the input from whatever the user typed last time (pure UI convenience -
-    // this does NOT re-apply anything server-side, see the note on generateHarnessSnippet
-    // below for why there is nothing to "re-apply").
-    const savedRoot = localStorage.getItem(HARNESS_ROOT_STORAGE_KEY) || "";
-    document.getElementById("harness-root-input").value = savedRoot;
+    // One-time migration of the pre-rework harness-root setting, then re-fill
+    // the Settings fields from what the user saved last time. The fields only
+    // live in localStorage - they take effect via the hidden first-message
+    // instruction (customizationHiddenBlock), not any server-side config.
+    migrateLegacyHarnessSetting();
+    document.getElementById("system-instruction-input").value =
+      localStorage.getItem(SYSTEM_INSTRUCTION_STORAGE_KEY) || "";
+    document.getElementById("persona-input").value = localStorage.getItem(PERSONA_STORAGE_KEY) || "";
 
     // Open the SSE stream up front (not lazily on first send) so it has time to
     // reach OPEN before any message is sent - see connectEventStream()'s comment
@@ -150,37 +160,39 @@ function onSettingsToggle() {
 }
 
 function onSettingsSave() {
-  const path = document.getElementById("harness-root-input").value.trim();
-  const snippetEl = document.getElementById("settings-snippet");
-  if (!path) {
-    localStorage.removeItem(HARNESS_ROOT_STORAGE_KEY);
-    snippetEl.style.display = "none";
-    setSettingsStatus("Enter a directory path first.", true);
-    return;
+  const systemInstruction = document.getElementById("system-instruction-input").value.trim();
+  const persona = document.getElementById("persona-input").value.trim();
+  if (systemInstruction) {
+    localStorage.setItem(SYSTEM_INSTRUCTION_STORAGE_KEY, systemInstruction);
+  } else {
+    localStorage.removeItem(SYSTEM_INSTRUCTION_STORAGE_KEY);
   }
-  localStorage.setItem(HARNESS_ROOT_STORAGE_KEY, path);
-  // Drop the current session so the very next message starts a fresh one,
-  // whose first message will carry the harness instruction for this path
-  // (see harnessHiddenBlock) - no server restart needed.
+  if (persona) {
+    localStorage.setItem(PERSONA_STORAGE_KEY, persona);
+  } else {
+    localStorage.removeItem(PERSONA_STORAGE_KEY);
+  }
+  // Drop the current session so the very next message starts a fresh one
+  // whose first message carries the updated settings (see
+  // customizationHiddenBlock) - no server restart needed.
   sessionId = null;
-  snippetEl.value = generateHarnessSnippet(path);
-  snippetEl.style.display = "block";
   setSettingsStatus(
-    "Saved - the agent will read and follow this harness from your next message onward. " +
-      "(Optional: paste the snippet below into opencode.json and restart opencode serve to also load AGENTS.md " +
-      "into every session's system prompt.)",
+    systemInstruction || persona
+      ? "Saved - applies from your next message onward."
+      : "Saved (both fields empty) - new conversations will use default behavior.",
     false
   );
 }
 
 function onSettingsClear() {
-  document.getElementById("harness-root-input").value = "";
-  localStorage.removeItem(HARNESS_ROOT_STORAGE_KEY);
+  document.getElementById("system-instruction-input").value = "";
+  document.getElementById("persona-input").value = "";
+  localStorage.removeItem(SYSTEM_INSTRUCTION_STORAGE_KEY);
+  localStorage.removeItem(PERSONA_STORAGE_KEY);
   // Same session reset as Save: the next message starts a fresh session with
-  // no harness instruction attached.
+  // no custom settings attached.
   sessionId = null;
-  document.getElementById("settings-snippet").style.display = "none";
-  setSettingsStatus("Cleared - new conversations will no longer use a harness.", false);
+  setSettingsStatus("Cleared - new conversations will use default behavior.", false);
 }
 
 function setSettingsStatus(text, isError) {
@@ -189,27 +201,29 @@ function setSettingsStatus(text, isError) {
   el.style.color = isError ? "#a80000" : "#605e5c";
 }
 
-// Generates the opencode.json fields needed to make a harness directory's AGENTS.md
-// part of every session's system prompt, plus the permission grant that goes with it.
-//
-// This is *not* applied automatically: opencode's REST API has a PATCH /config endpoint
-// that looks like it should do this at runtime, but empirically it does not persist
-// anything - it returns HTTP 200 and echoes the request body back, yet an immediate
-// GET /config afterward shows the change never took effect (confirmed by hand against a
-// live opencode serve instance, not assumed from docs). So instead this only generates
-// the JSON for the user to paste into the project's opencode.json themselves, which goes
-// through opencode's normal (working) startup config-loading path.
-//
-// `permission.external_directory` is required alongside `instructions`, not optional:
-// opencode's read/write/edit/bash tools are not sandboxed to the project cwd, so without
-// this allow rule the agent's first attempt to touch a path under the harness root would
-// trigger an approval prompt this chat UI has no way to answer, and the request would hang.
-function generateHarnessSnippet(path) {
-  const config = {
-    instructions: [`${path}\\AGENTS.md`],
-    permission: { external_directory: { [`${path}\\**`]: "allow" } },
-  };
-  return JSON.stringify(config, null, 2);
+// One-time migration from the pre-rework settings panel, which maintained a
+// single "harness root directory" path instead of the System Instruction /
+// Persona fields. Rather than silently dropping that configured behavior, it
+// is rewritten as an equivalent System Instruction (the injection mechanism
+// is the same hidden first-message block either way), so an existing user's
+// harness workflow keeps working across the UI change without re-entering
+// anything. The legacy key is then removed so this runs at most once.
+function migrateLegacyHarnessSetting() {
+  const legacyRoot = (localStorage.getItem(LEGACY_HARNESS_STORAGE_KEY) || "").trim();
+  if (!legacyRoot) {
+    return;
+  }
+  if (!localStorage.getItem(SYSTEM_INSTRUCTION_STORAGE_KEY)) {
+    localStorage.setItem(
+      SYSTEM_INSTRUCTION_STORAGE_KEY,
+      "Read the agent-harness directory at " +
+        legacyRoot +
+        " with your file tools - start with AGENTS.md in its root (if present), then the companion files it " +
+        "references (e.g. SOUL.md, USER.md, memory/, skills/) - and adopt and follow the instructions, persona, " +
+        "and conventions defined there for the entire conversation."
+    );
+  }
+  localStorage.removeItem(LEGACY_HARNESS_STORAGE_KEY);
 }
 
 function onInputKeyDown(event) {
@@ -294,16 +308,16 @@ async function onSubmit(event) {
     // on every message of the same conversation.
     const documentContext = isNew ? await getActiveDocumentText() : null;
     // Same first-message-only gating as the document context: once the
-    // harness instruction is in the session's history, it stays visible to
+    // settings instruction is in the session's history, it stays visible to
     // the model on every later turn.
-    const harnessRoot = isNew ? getSavedHarnessRoot() : null;
+    const customization = isNew ? getSavedCustomization() : null;
     // Fetched fresh on every message, unlike the whole-document context above:
     // a selection is a right-now, in-the-moment thing (the user highlighting a
     // paragraph and then saying "rewrite this"), not something that stays
     // valid for the rest of the conversation the way the document's content
     // (mostly) does.
     const selectedText = await getSelectedText();
-    await streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction, harnessRoot);
+    await streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction, customization);
   } catch (err) {
     appendMessage(
       "error",
@@ -389,32 +403,37 @@ function getSelectedText() {
 const SUGGESTIONS_MARKER_RE = /<!--\s*SUGGESTIONS:([\s\S]*?)-->/i;
 const SUGGESTIONS_TAIL_RE = /<!--\s*SUGGESTIONS:[\s\S]*$/i;
 
-// The harness root saved via the gear panel, or null if none is configured.
-function getSavedHarnessRoot() {
-  return (localStorage.getItem(HARNESS_ROOT_STORAGE_KEY) || "").trim() || null;
+// The gear-panel Settings fields, or null when neither is configured.
+function getSavedCustomization() {
+  const systemInstruction = (localStorage.getItem(SYSTEM_INSTRUCTION_STORAGE_KEY) || "").trim();
+  const persona = (localStorage.getItem(PERSONA_STORAGE_KEY) || "").trim();
+  if (!systemInstruction && !persona) {
+    return null;
+  }
+  return { systemInstruction, persona };
 }
 
 // Hidden instruction sent on a session's FIRST message (same isNew gating as
-// the whole-document context) when a harness root is configured: makes the
-// agent actually read and adopt the harness's instruction files at runtime.
-// This is what makes the gear-panel path take effect live - opencode's
-// PATCH /config was confirmed not to persist anything (see
-// generateHarnessSnippet), so instead of trying to inject AGENTS.md into the
-// server-side system prompt, the agent is told to read the files itself with
-// its own tools. Requires opencode.json's `permission.external_directory:
-// "allow"` - without it, the agent's first read of an external path would
-// raise an approval prompt this chat UI has no way to answer, and the
-// request would hang.
-function harnessHiddenBlock(harnessRoot) {
-  return (
-    "The user has connected an external agent-harness directory to this conversation: " +
-    harnessRoot +
-    "\n\nBefore handling the user's request below, read that directory's core instruction files with your file " +
-    "tools: start with AGENTS.md in its root (if present), then the companion files it references (e.g. SOUL.md, " +
-    "USER.md, memory/, skills/). Adopt and follow the instructions, persona, and conventions defined there for " +
-    "this entire conversation, in addition to (not instead of) the standing rules in this prompt. If the " +
-    "directory or its AGENTS.md cannot be read, say so briefly in your reply instead of failing silently."
-  );
+// the whole-document context) carrying the gear panel's System Instruction /
+// Persona fields. This client-side injection is what makes the settings take
+// effect live, with no server restart - opencode's PATCH /config was
+// confirmed not to persist anything (see tech-design-spec.md §5), so
+// server-side config is not an option for per-user runtime settings.
+function customizationHiddenBlock(customization) {
+  const parts = ["The user has configured standing settings for this assistant in the add-in's Settings panel."];
+  if (customization.persona) {
+    parts.push(
+      "PERSONA - adopt this identity, expertise, and tone for the entire conversation:\n" + customization.persona
+    );
+  }
+  if (customization.systemInstruction) {
+    parts.push(
+      "SYSTEM INSTRUCTION - follow these user-level standing rules throughout the entire conversation, in " +
+        "addition to (not instead of) the other standing rules in this prompt:\n" +
+        customization.systemInstruction
+    );
+  }
+  return parts.join("\n\n");
 }
 
 // Shared by buildPromptParts and buildPromptIdeasParts so the "here is the
@@ -461,10 +480,10 @@ const FORMATTING_INSTRUCTION =
 // suggestions-marker instruction) go in as a separate leading text part so
 // they never have to be mixed into the text actually shown in the user's own
 // chat bubble.
-function buildPromptParts(text, documentContext, selectedText, hiddenInstruction, harnessRoot) {
+function buildPromptParts(text, documentContext, selectedText, hiddenInstruction, customization) {
   const hidden = [];
-  if (harnessRoot) {
-    hidden.push(harnessHiddenBlock(harnessRoot));
+  if (customization) {
+    hidden.push(customizationHiddenBlock(customization));
   }
   if (documentContext) {
     hidden.push(documentContextHiddenBlock(documentContext));
@@ -559,10 +578,10 @@ const PROMPT_IDEAS_MARKER_RE = /<!--\s*PROMPT_IDEAS:([\s\S]*?)-->/i;
 // `documentContext` is only passed on the session's first message (isNew) -
 // same gating as the whole-document injection elsewhere - since every later
 // turn on this session already has the document in its own history.
-function buildPromptIdeasParts(documentContext, harnessRoot) {
+function buildPromptIdeasParts(documentContext, customization) {
   const hidden = [];
-  if (harnessRoot) {
-    hidden.push(harnessHiddenBlock(harnessRoot));
+  if (customization) {
+    hidden.push(customizationHiddenBlock(customization));
   }
   if (documentContext) {
     hidden.push(documentContextHiddenBlock(documentContext));
@@ -668,7 +687,7 @@ async function deriveLibraryPromptIdeas() {
   const { id: sid, isNew } = await ensureSession();
   const raw = await sendToOpenCodeBlocking(
     sid,
-    buildPromptIdeasParts(isNew ? documentContext : null, isNew ? getSavedHarnessRoot() : null),
+    buildPromptIdeasParts(isNew ? documentContext : null, isNew ? getSavedCustomization() : null),
     150000
   );
   const match = raw.match(PROMPT_IDEAS_MARKER_RE);
@@ -1038,12 +1057,12 @@ function onToolPartUpdated(reply, part) {
 // Sends one message via the streaming path, falling back to the old blocking
 // round trip if the SSE stream never came up (e.g. CORS misconfigured for
 // /event specifically, or an opencode version predating prompt_async/event).
-async function streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction, harnessRoot) {
+async function streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction, customization) {
   const streamOk = await connectEventStream();
   if (!streamOk) {
     const replyText = await sendToOpenCodeBlocking(
       sid,
-      buildPromptParts(text, documentContext, selectedText, hiddenInstruction, harnessRoot)
+      buildPromptParts(text, documentContext, selectedText, hiddenInstruction, customization)
     );
     appendMessage("assistant", stripSuggestionsMarker(replyText).trim());
     return;
@@ -1084,7 +1103,7 @@ async function streamAssistantReply(sid, text, documentContext, selectedText, hi
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: OPENCODE_MODEL,
-        parts: buildPromptParts(text, documentContext, selectedText, hiddenInstruction, harnessRoot),
+        parts: buildPromptParts(text, documentContext, selectedText, hiddenInstruction, customization),
       }),
     });
   } catch (err) {

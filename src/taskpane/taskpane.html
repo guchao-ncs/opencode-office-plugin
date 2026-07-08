@@ -30,18 +30,24 @@
             <button type="button" id="settings-toggle" class="chat-settings-toggle" aria-label="Settings" title="Settings">⚙</button>
         </header>
         <section id="settings-panel" class="settings-panel" style="display: none;">
-            <label for="harness-root-input">Harness root directory (optional)</label>
-            <input type="text" id="harness-root-input" class="settings-input" placeholder="C:\path\to\your\agent-harness-folder" />
+            <div class="settings-tab-row">
+                <span class="settings-tab settings-tab--active">Settings</span>
+            </div>
+            <label for="system-instruction-input">System Instruction</label>
+            <textarea id="system-instruction-input" class="settings-textarea" rows="4"
+                placeholder="Standing rules the assistant must follow in every conversation, e.g. &quot;Always reply in formal English. Focus on tender/proposal quality.&quot;"></textarea>
+            <label for="persona-input">Persona</label>
+            <textarea id="persona-input" class="settings-textarea" rows="4"
+                placeholder="Who the assistant should be, e.g. &quot;You are a senior bid manager at NCS with 15 years of government-tender experience.&quot;"></textarea>
             <div class="settings-panel-actions">
                 <button type="button" id="settings-save" class="ms-Button ms-Button--primary">
-                    <span class="ms-Button-label">Generate config</span>
+                    <span class="ms-Button-label">Save</span>
                 </button>
                 <button type="button" id="settings-clear" class="ms-Button">
                     <span class="ms-Button-label">Clear</span>
                 </button>
             </div>
             <p id="settings-status" class="settings-status"></p>
-            <textarea id="settings-snippet" class="settings-snippet" rows="6" readonly style="display: none;"></textarea>
         </section>
         <div id="chat-log" class="chat-log" aria-live="polite"></div>
         <div id="prompt-ideas-toolbar" class="prompt-ideas-toolbar" style="display: none;">
