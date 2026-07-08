@@ -380,7 +380,44 @@ body {
     border-radius: 4px;
 }
 
+/* Claude.ai-style round send button: a filled circle with an up arrow,
+   greyed out while the input is empty, and swapped to a stop square while a
+   reply is generating - clicking it then aborts the run (see onSubmit /
+   stopActiveRun in taskpane.js). */
 .chat-send {
     flex: 0 0 auto;
     align-self: flex-end;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background-color: #c96442;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+}
+
+.chat-send:hover:not(:disabled) {
+    background-color: #b25335;
+}
+
+.chat-send:disabled {
+    background-color: #e8e6e4;
+    color: #a19f9d;
+    cursor: default;
+}
+
+.chat-send-icon--stop {
+    display: none;
+}
+
+.chat-send--stop .chat-send-icon--send {
+    display: none;
+}
+
+.chat-send--stop .chat-send-icon--stop {
+    display: block;
 }

@@ -6,30 +6,19 @@
 /* global Office */
 
 Office.onReady(() => {
-  // If needed, Office.js is ready to be called.
+  // Ribbon command handler stub. The actual AI Assistant functionality is in taskpane.html/js.
 });
 
 /**
- * Shows a notification when the add-in command is executed.
+ * Ribbon command handler for the Task Pane button.
  * @param event {Office.AddinCommands.Event}
  */
 function action(event) {
-  const message = {
-    type: Office.MailboxEnums.ItemNotificationMessageType.InformationalMessage,
-    message: "Performed action.",
-    icon: "Icon.80x80",
-    persistent: true,
-  };
-
-  // Show a notification message.
-  Office.context.mailbox.item.notificationMessages.replaceAsync(
-    "ActionPerformanceNotification",
-    message
-  );
-
-  // Be sure to indicate when the add-in command function is complete.
+  // The actual "Show Task Pane" action is wired via manifest.xml's
+  // ShowTaskpane action, not this handler function.
   event.completed();
 }
 
-// Register the function with Office.
+// Register the function with Office (required even though ShowTaskpane
+// is handled declaratively in manifest.xml).
 Office.actions.associate("action", action);

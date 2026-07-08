@@ -83,9 +83,18 @@ let sessionId = null;
 // Set by a doc-suggestion chip (see renderDocSuggestions) that needs to carry
 // extra hidden guidance alongside its literal chip text - e.g. the "Revise
 // the doc based on winning theme" chip attaches instructions to ask a
-// clarifying question and enter plan-mode-only first. Consumed (read once,
-// then cleared) by the very next onSubmit, same as a normal typed message.
+// clarifying question and enter plan-mode-only first. Chips stage their text
+// into the input for the user to edit before sending (they don't auto-send),
+// so this stays pending until the next onSubmit consumes it - or until the
+// user wipes the staged text entirely, which drops it (see
+// onChatInputChanged), since the instruction belongs to the chip's prompt,
+// not to whatever unrelated message gets typed next.
 let pendingHiddenInstruction = null;
+
+// True from onSubmit accepting a message until its reply fully settles. While
+// set, the send button is in "stop" mode (clicking it aborts the run instead
+// of sending) and Enter is ignored - see onSubmit/onInputKeyDown.
+let isSending = false;
 
 Office.onReady((info) => {
   if (info.host === Office.HostType.Word) {
@@ -93,6 +102,7 @@ Office.onReady((info) => {
     document.getElementById("app-body").style.display = "flex";
     document.getElementById("chat-form").addEventListener("submit", onSubmit);
     document.getElementById("chat-input").addEventListener("keydown", onInputKeyDown);
+    document.getElementById("chat-input").addEventListener("input", onChatInputChanged);
     document.getElementById("settings-toggle").addEventListener("click", onSettingsToggle);
     document.getElementById("settings-save").addEventListener("click", onSettingsSave);
     document.getElementById("settings-clear").addEventListener("click", onSettingsClear);
@@ -149,11 +159,16 @@ function onSettingsSave() {
     return;
   }
   localStorage.setItem(HARNESS_ROOT_STORAGE_KEY, path);
+  // Drop the current session so the very next message starts a fresh one,
+  // whose first message will carry the harness instruction for this path
+  // (see harnessHiddenBlock) - no server restart needed.
+  sessionId = null;
   snippetEl.value = generateHarnessSnippet(path);
   snippetEl.style.display = "block";
-  snippetEl.select();
   setSettingsStatus(
-    "Copy this into opencode.json's top level (next to \"mcp\"), then restart opencode serve for it to take effect.",
+    "Saved - the agent will read and follow this harness from your next message onward. " +
+      "(Optional: paste the snippet below into opencode.json and restart opencode serve to also load AGENTS.md " +
+      "into every session's system prompt.)",
     false
   );
 }
@@ -161,8 +176,11 @@ function onSettingsSave() {
 function onSettingsClear() {
   document.getElementById("harness-root-input").value = "";
   localStorage.removeItem(HARNESS_ROOT_STORAGE_KEY);
+  // Same session reset as Save: the next message starts a fresh session with
+  // no harness instruction attached.
+  sessionId = null;
   document.getElementById("settings-snippet").style.display = "none";
-  setSettingsStatus("Cleared. Remove the instructions/permission fields from opencode.json and restart opencode serve to fully disable.", false);
+  setSettingsStatus("Cleared - new conversations will no longer use a harness.", false);
 }
 
 function setSettingsStatus(text, isError) {
@@ -197,28 +215,52 @@ function generateHarnessSnippet(path) {
 function onInputKeyDown(event) {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    // form.requestSubmit() with no argument does NOT check any submit
-    // button's disabled state (that gating only applies to an actual button
-    // click) - without this check, pressing Enter while a reply is still
-    // streaming would fire a second onSubmit() and start an overlapping turn
-    // on the same session, corrupting both turns' message-ID tracking (see
-    // the activeReply guard in onSubmit for the full explanation).
-    if (document.getElementById("chat-send").disabled) {
+    // While a reply is in flight the send button is in stop mode - Enter must
+    // neither trigger an accidental abort nor start a second overlapping turn
+    // on the same session (which corrupts both turns' message-ID tracking -
+    // see activeReply's comment), so it is simply ignored until the run
+    // settles.
+    if (isSending) {
       return;
     }
     document.getElementById("chat-form").requestSubmit();
   }
 }
 
+// Keeps the send button's enabled state in sync with whether there is
+// anything to send (Claude.ai-style: greyed out on an empty input). Also
+// drops a chip-staged hidden instruction if the user wipes the staged text -
+// the instruction belongs to that chip's prompt, not to whatever they type
+// next. Programmatic input.value writes don't fire "input", so chip handlers
+// call this directly after staging.
+function onChatInputChanged() {
+  const input = document.getElementById("chat-input");
+  if (!isSending) {
+    document.getElementById("chat-send").disabled = !input.value.trim();
+  }
+  if (!input.value.trim()) {
+    pendingHiddenInstruction = null;
+  }
+}
+
+// Swaps the send button between its two modes: a send arrow (disabled when
+// the input is empty) and, while a reply is in flight, an always-enabled stop
+// square that aborts the run.
+function setSendButtonMode(stopping) {
+  const btn = document.getElementById("chat-send");
+  btn.classList.toggle("chat-send--stop", stopping);
+  const label = stopping ? "Stop generating" : "Send";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  btn.disabled = stopping ? false : !document.getElementById("chat-input").value.trim();
+}
+
 async function onSubmit(event) {
   event.preventDefault();
-  if (activeReply) {
-    // Defense in depth against any path (not just the Enter-key one above)
-    // that might invoke a second submit while a reply is still streaming -
-    // two overlapping turns on the same session both drive the single
-    // module-level activeReply/seenAssistantMessageIDs state, which corrupts
-    // message-ID tracking for both and can surface as "OpenCode finished
-    // without returning any text." for the second turn.
+  if (isSending) {
+    // The button is in stop mode while a reply is in flight, so this submit
+    // is the user clicking Stop, not sending a new message.
+    stopActiveRun();
     return;
   }
   const input = document.getElementById("chat-input");
@@ -236,8 +278,8 @@ async function onSubmit(event) {
   // still be used to re-open a freshly-filtered view later.
   document.getElementById("doc-suggestions-panel").style.display = "none";
 
-  const sendButton = document.getElementById("chat-send");
-  sendButton.disabled = true;
+  isSending = true;
+  setSendButtonMode(true);
 
   // Read-and-clear: a doc-suggestion chip may have stashed extra hidden
   // guidance for this specific message (see pendingHiddenInstruction above).
@@ -251,20 +293,25 @@ async function onSubmit(event) {
     // model on every later turn, so there is no need to re-fetch/re-send it
     // on every message of the same conversation.
     const documentContext = isNew ? await getActiveDocumentText() : null;
+    // Same first-message-only gating as the document context: once the
+    // harness instruction is in the session's history, it stays visible to
+    // the model on every later turn.
+    const harnessRoot = isNew ? getSavedHarnessRoot() : null;
     // Fetched fresh on every message, unlike the whole-document context above:
     // a selection is a right-now, in-the-moment thing (the user highlighting a
     // paragraph and then saying "rewrite this"), not something that stays
     // valid for the rest of the conversation the way the document's content
     // (mostly) does.
     const selectedText = await getSelectedText();
-    await streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction);
+    await streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction, harnessRoot);
   } catch (err) {
     appendMessage(
       "error",
       `Could not reach OpenCode at ${OPENCODE_BASE_URL}. Make sure "opencode serve --port 4098" is running. (${err.message})`
     );
   } finally {
-    sendButton.disabled = false;
+    isSending = false;
+    setSendButtonMode(false);
   }
 }
 
@@ -342,6 +389,34 @@ function getSelectedText() {
 const SUGGESTIONS_MARKER_RE = /<!--\s*SUGGESTIONS:([\s\S]*?)-->/i;
 const SUGGESTIONS_TAIL_RE = /<!--\s*SUGGESTIONS:[\s\S]*$/i;
 
+// The harness root saved via the gear panel, or null if none is configured.
+function getSavedHarnessRoot() {
+  return (localStorage.getItem(HARNESS_ROOT_STORAGE_KEY) || "").trim() || null;
+}
+
+// Hidden instruction sent on a session's FIRST message (same isNew gating as
+// the whole-document context) when a harness root is configured: makes the
+// agent actually read and adopt the harness's instruction files at runtime.
+// This is what makes the gear-panel path take effect live - opencode's
+// PATCH /config was confirmed not to persist anything (see
+// generateHarnessSnippet), so instead of trying to inject AGENTS.md into the
+// server-side system prompt, the agent is told to read the files itself with
+// its own tools. Requires opencode.json's `permission.external_directory:
+// "allow"` - without it, the agent's first read of an external path would
+// raise an approval prompt this chat UI has no way to answer, and the
+// request would hang.
+function harnessHiddenBlock(harnessRoot) {
+  return (
+    "The user has connected an external agent-harness directory to this conversation: " +
+    harnessRoot +
+    "\n\nBefore handling the user's request below, read that directory's core instruction files with your file " +
+    "tools: start with AGENTS.md in its root (if present), then the companion files it references (e.g. SOUL.md, " +
+    "USER.md, memory/, skills/). Adopt and follow the instructions, persona, and conventions defined there for " +
+    "this entire conversation, in addition to (not instead of) the standing rules in this prompt. If the " +
+    "directory or its AGENTS.md cannot be read, say so briefly in your reply instead of failing silently."
+  );
+}
+
 // Shared by buildPromptParts and buildPromptIdeasParts so the "here is the
 // whole document" framing (and its file-agnostic "the document" phrasing) is
 // worded identically regardless of which hidden message it rides along with.
@@ -366,6 +441,19 @@ const TRACK_CHANGES_INSTRUCTION =
   "toggle-track-changes tool first if it is not already enabled - so edits stay visible and reviewable rather " +
   "than being silently applied. This does not apply to read-only actions like summarizing or reading content.";
 
+// Standing rule preventing a failure mode observed in real use: asked to "add
+// the generated content to the doc", the model dumped its own markdown answer
+// (pipe-delimited table rows, ** bold markers) into the document as literal
+// plain text, in a font/size unrelated to the surrounding content.
+const FORMATTING_INSTRUCTION =
+  "Standing rule: when inserting or editing content in the Word document, produce native Word formatting - " +
+  "never write markdown syntax into the document as literal text (no pipe-delimited '|' table rows, no #/##" +
+  " heading markers, no **bold** asterisks, no backticks, no '-' bullet characters). Tabular data must be " +
+  "inserted as a real Word table (use the add-table tool), headings via real Word heading styles, and lists " +
+  "via Word's own list formatting. Before inserting, read the formatting of the surrounding existing content " +
+  "(font family, font size, styles) and match it, so the new content blends in seamlessly with the rest of " +
+  "the document.";
+
 // Builds the actual `parts` payload sent to OpenCode: hidden instructions
 // (document context on the session's first message, the current selection on
 // every message, an optional one-off instruction carried by a doc-suggestion
@@ -373,8 +461,11 @@ const TRACK_CHANGES_INSTRUCTION =
 // suggestions-marker instruction) go in as a separate leading text part so
 // they never have to be mixed into the text actually shown in the user's own
 // chat bubble.
-function buildPromptParts(text, documentContext, selectedText, hiddenInstruction) {
+function buildPromptParts(text, documentContext, selectedText, hiddenInstruction, harnessRoot) {
   const hidden = [];
+  if (harnessRoot) {
+    hidden.push(harnessHiddenBlock(harnessRoot));
+  }
   if (documentContext) {
     hidden.push(documentContextHiddenBlock(documentContext));
   }
@@ -392,6 +483,7 @@ function buildPromptParts(text, documentContext, selectedText, hiddenInstruction
     hidden.push(hiddenInstruction);
   }
   hidden.push(TRACK_CHANGES_INSTRUCTION);
+  hidden.push(FORMATTING_INSTRUCTION);
   hidden.push(
     "After you finish your normal answer, add one final line containing ONLY: " +
       '<!--SUGGESTIONS:["...", "..."]--> with exactly 2 short, specific follow-up actions grounded in your answer, ' +
@@ -467,8 +559,11 @@ const PROMPT_IDEAS_MARKER_RE = /<!--\s*PROMPT_IDEAS:([\s\S]*?)-->/i;
 // `documentContext` is only passed on the session's first message (isNew) -
 // same gating as the whole-document injection elsewhere - since every later
 // turn on this session already has the document in its own history.
-function buildPromptIdeasParts(documentContext) {
+function buildPromptIdeasParts(documentContext, harnessRoot) {
   const hidden = [];
+  if (harnessRoot) {
+    hidden.push(harnessHiddenBlock(harnessRoot));
+  }
   if (documentContext) {
     hidden.push(documentContextHiddenBlock(documentContext));
   }
@@ -571,7 +666,11 @@ async function deriveLibraryPromptIdeas() {
   // propagate to togglePromptIdeas, which shows them as a visible error
   // instead of the panel silently going blank with no explanation.
   const { id: sid, isNew } = await ensureSession();
-  const raw = await sendToOpenCodeBlocking(sid, buildPromptIdeasParts(isNew ? documentContext : null), 150000);
+  const raw = await sendToOpenCodeBlocking(
+    sid,
+    buildPromptIdeasParts(isNew ? documentContext : null, isNew ? getSavedHarnessRoot() : null),
+    150000
+  );
   const match = raw.match(PROMPT_IDEAS_MARKER_RE);
   if (!match) {
     return [];
@@ -621,7 +720,18 @@ function renderDocSuggestions(chips) {
 
   const remaining = chips.filter((chip) => !isPromptAlreadyUsed(chip.text));
   if (remaining.length === 0) {
-    panel.style.display = "none";
+    // Never collapse silently - a click with no visible response reads as
+    // "the button is broken", not "there was nothing new to offer".
+    container.innerHTML = "";
+    const note = document.createElement("p");
+    note.className = "doc-suggestions-loading";
+    note.textContent =
+      chips.length === 0
+        ? 'No prompt ideas came back for this document. Click "Prompt ideas" to try again.'
+        : "Every idea for this document has already been asked in this conversation - continue the chat and try again later.";
+    container.appendChild(note);
+    panel.style.display = "block";
+    container.style.display = "flex";
     return;
   }
 
@@ -632,12 +742,15 @@ function renderDocSuggestions(chips) {
     btn.className = "chat-suggestion-chip";
     btn.textContent = chip.label;
     btn.addEventListener("click", () => {
-      if (document.getElementById("chat-send").disabled) {
-        return;
-      }
+      // Stage the chip's prompt into the input for the user to review/edit
+      // (e.g. tweak specifics) and send themselves, rather than firing it off
+      // immediately. Its hidden instruction rides along with the staged text
+      // and is dropped if the user wipes it (see onChatInputChanged).
       pendingHiddenInstruction = chip.hiddenInstruction || null;
-      document.getElementById("chat-input").value = chip.text;
-      document.getElementById("chat-form").requestSubmit();
+      const input = document.getElementById("chat-input");
+      input.value = chip.text;
+      onChatInputChanged();
+      input.focus();
     });
     container.appendChild(btn);
   }
@@ -925,12 +1038,12 @@ function onToolPartUpdated(reply, part) {
 // Sends one message via the streaming path, falling back to the old blocking
 // round trip if the SSE stream never came up (e.g. CORS misconfigured for
 // /event specifically, or an opencode version predating prompt_async/event).
-async function streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction) {
+async function streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction, harnessRoot) {
   const streamOk = await connectEventStream();
   if (!streamOk) {
     const replyText = await sendToOpenCodeBlocking(
       sid,
-      buildPromptParts(text, documentContext, selectedText, hiddenInstruction)
+      buildPromptParts(text, documentContext, selectedText, hiddenInstruction, harnessRoot)
     );
     appendMessage("assistant", stripSuggestionsMarker(replyText).trim());
     return;
@@ -971,7 +1084,7 @@ async function streamAssistantReply(sid, text, documentContext, selectedText, hi
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: OPENCODE_MODEL,
-        parts: buildPromptParts(text, documentContext, selectedText, hiddenInstruction),
+        parts: buildPromptParts(text, documentContext, selectedText, hiddenInstruction, harnessRoot),
       }),
     });
   } catch (err) {
@@ -986,6 +1099,26 @@ async function streamAssistantReply(sid, text, documentContext, selectedText, hi
   }
 
   await done;
+}
+
+// Invoked by the send button's stop mode (see onSubmit): best-effort asks the
+// server to abort the in-flight generation, then finalizes the reply locally
+// right away with whatever text has streamed so far, instead of waiting for
+// the server to (maybe) emit a final event. Any late events for the aborted
+// message are ignored - activeReply is already null by then, and its message
+// IDs are in seenAssistantMessageIDs, so the next turn can't mistake them
+// for its own.
+function stopActiveRun() {
+  const reply = activeReply;
+  if (!reply) {
+    // Nothing to stop client-side (e.g. the rare blocking-fallback path,
+    // which has no incremental state to finalize) - the run ends on its own.
+    return;
+  }
+  fetch(`${OPENCODE_BASE_URL}/session/${reply.sessionID}/abort`, { method: "POST" }).catch(() => {});
+  reply.stopped = true;
+  reply.finished = true;
+  finishActiveReply(null);
 }
 
 function finishActiveReply(error) {
@@ -1018,7 +1151,12 @@ function finishActiveReply(error) {
     appendMessage("error", describeOpenCodeError(error));
   } else if (!displayText) {
     reply.dom.el.remove();
-    appendMessage("error", "OpenCode finished without returning any text.");
+    // A user-initiated stop before any text arrived needs no error bubble -
+    // the user knows why the reply vanished; only an unexpected empty finish
+    // deserves one.
+    if (!reply.stopped) {
+      appendMessage("error", "OpenCode finished without returning any text.");
+    }
   } else {
     wireMessageActions(reply.dom, displayText);
     renderSuggestions(reply.dom, suggestions);
@@ -1178,11 +1316,12 @@ function renderSuggestions(dom, suggestions) {
     chip.className = "chat-suggestion-chip";
     chip.textContent = suggestion;
     chip.addEventListener("click", () => {
-      if (document.getElementById("chat-send").disabled) {
-        return;
-      }
-      document.getElementById("chat-input").value = suggestion;
-      document.getElementById("chat-form").requestSubmit();
+      // Same fill-then-edit behavior as the prompt-ideas chips: stage the
+      // suggestion in the input for review rather than sending immediately.
+      const input = document.getElementById("chat-input");
+      input.value = suggestion;
+      onChatInputChanged();
+      input.focus();
     });
     dom.suggestionsEl.appendChild(chip);
   }

@@ -79,6 +79,14 @@ it checks whether ports 3000/4098 are already listening before starting
 anything, so it's safe even if you also start things manually. Logs go to
 `%LOCALAPPDATA%\AI Assistant\logs\`.
 
+The script also self-heals the `word` MCP connection: a logon-time cold start
+can make opencode's handshake with `word-mcp-live` time out, leaving the
+connection in a permanent `failed` state (the agent then has no Word tools
+and says it "can't edit the document"). On every run the script polls the
+live `/mcp` status and, if `word` shows `failed`, first tries a runtime
+reconnect (`POST /mcp/word/connect`) and then, as a last resort, restarts
+`opencode serve` once.
+
 To start the services immediately without logging out again, run the same
 script directly:
 
@@ -151,31 +159,31 @@ opencode mcp list
 The task pane's header has a gear icon (⚙) that opens a small settings
 panel where you can type the path to any other local folder — for example
 an Obsidian vault or agent-harness project that has its own `AGENTS.md` —
-and click **Generate config**. This produces a JSON snippet like:
+and click **Generate config** to save it. **This takes effect live**: from
+your next message onward, each new conversation's first message carries a
+hidden instruction telling the agent to read that folder's instruction
+files (`AGENTS.md`, plus whatever it references — `SOUL.md`, `USER.md`,
+`memory/`, `skills/`, …) with its own file tools and follow them for the
+whole conversation. No server restart is needed, and changing the path
+applies from the very next message. Click **Clear** to stop new
+conversations from using any harness.
 
-```json
-{
-  "instructions": ["C:\\path\\to\\your\\agent-harness-folder\\AGENTS.md"],
-  "permission": { "external_directory": { "C:\\path\\to\\your\\agent-harness-folder\\**": "allow" } }
-}
-```
+This works because this project's `opencode.json` sets
+`permission.external_directory: "allow"`, which lets the agent's
+`read`/`write`/`edit`/`bash` tools touch paths outside the project folder
+without an approval prompt (the chat UI has no way to answer one — the
+request would hang). Note that this grants **full read/write access to any
+local path**, not just the harness folder — an acceptable posture for a
+local, single-user tool where the agent only acts on your own prompts, but
+worth knowing. (A per-path grant can't be applied at runtime because
+opencode's `PATCH /config` doesn't persist anything — see
+`tech-design-spec.md` §5.)
 
-Copy this into the top level of this project's `opencode.json` (next to
-`"mcp"`), then restart `opencode serve` for it to take effect. The path you
-type is remembered in the browser's `localStorage` so it re-fills the input
-next time you open the panel, but **that's a UI convenience only** — it does
-not get applied anywhere by itself. There is no live/automatic way to apply
-this from the task pane; opencode's `PATCH /config` endpoint looks like it
-should do this at runtime, but was found not to persist anything against a
-real running server (see `tech-design-spec.md` §5), so this feature only
-generates the snippet for you to paste in by hand.
-
-Note that `permission.external_directory: "allow"` grants the agent's
-`read`/`write`/`edit`/`bash` tools full access to that folder, not just
-read access — only point this at a folder you're comfortable letting the
-agent modify. Click **Clear** to wipe the saved path from `localStorage`
-(you'll still need to manually remove the fields from `opencode.json` and
-restart `opencode serve` to actually revoke the access).
+The panel also still generates an optional JSON snippet
+(`instructions` + a per-path permission) you can paste into `opencode.json`
+and restart `opencode serve` with — that loads `AGENTS.md` into every
+session's system prompt at the server level, instead of (or in addition to)
+the per-conversation live read above.
 
 ## Testing
 

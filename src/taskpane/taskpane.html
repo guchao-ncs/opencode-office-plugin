@@ -55,8 +55,13 @@
         </section>
         <form id="chat-form" class="chat-input-row">
             <textarea id="chat-input" class="chat-input" rows="2" placeholder="Ask OpenCode to edit this document..."></textarea>
-            <button type="submit" id="chat-send" class="ms-Button ms-Button--primary chat-send">
-                <span class="ms-Button-label">Send</span>
+            <button type="submit" id="chat-send" class="chat-send" aria-label="Send" title="Send" disabled>
+                <svg class="chat-send-icon chat-send-icon--send" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 2.5l5.2 5.2-1.4 1.4L9 6.3v7.2H7V6.3L4.2 9.1 2.8 7.7z" fill="currentColor"/>
+                </svg>
+                <svg class="chat-send-icon chat-send-icon--stop" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                    <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/>
+                </svg>
             </button>
         </form>
     </main>
