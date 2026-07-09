@@ -54,6 +54,40 @@ try {
                 Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue |
                     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
             }
+
+            # 4) the static server (the autostart serving path) serves the pre-built
+            #    dist/ over HTTPS on :3000 - built by `npm run build`, served by
+            #    `npm run serve-static`, reusing the same trusted dev cert as webpack.
+            $buildOutput = npm run build 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+                $failures += "npm run build failed:`n$buildOutput"
+            } elseif (-not (Test-Path (Join-Path $root "dist\taskpane.html"))) {
+                $failures += "npm run build did not produce dist\taskpane.html"
+            } else {
+                $staticJob = Start-Job -ScriptBlock {
+                    param($root)
+                    Set-Location $root
+                    npm run serve-static
+                } -ArgumentList $root
+                try {
+                    $staticOk = $false
+                    for ($i = 0; $i -lt 15; $i++) {
+                        Start-Sleep -Seconds 1
+                        try {
+                            $resp = Invoke-WebRequest -Uri "https://localhost:3000/taskpane.html" -TimeoutSec 3 -UseBasicParsing
+                            if ($resp.StatusCode -eq 200) { $staticOk = $true; break }
+                        } catch { }
+                    }
+                    if (-not $staticOk) {
+                        $failures += "npm run serve-static did not serve https://localhost:3000/taskpane.html (200) within 15s"
+                    }
+                } finally {
+                    Stop-Job $staticJob -ErrorAction SilentlyContinue | Out-Null
+                    Remove-Job $staticJob -Force -ErrorAction SilentlyContinue | Out-Null
+                    Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue |
+                        ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+                }
+            }
         }
     }
 } finally {
@@ -61,7 +95,7 @@ try {
 }
 
 if ($failures.Count -eq 0) {
-    Write-Host "PASS: Phase 2 dev-server checks (manifest validate, dev cert, HTTPS taskpane.html)" -ForegroundColor Green
+    Write-Host "PASS: Phase 2 dev-server checks (manifest validate, dev cert, HTTPS taskpane.html via webpack + static server)" -ForegroundColor Green
     exit 0
 } else {
     Write-Host "FAIL: Phase 2 dev-server checks" -ForegroundColor Red

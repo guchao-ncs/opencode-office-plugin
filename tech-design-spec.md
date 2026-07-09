@@ -85,9 +85,22 @@ the pane auto-shows the next time that specific document is reopened —
 without a manual ribbon click. This does not apply to brand-new blank
 documents (see README). Separately, `scripts/start-background-services.ps1`
 (optionally installed to run at Windows logon via
-`scripts/install-autostart.ps1`) starts `opencode serve` and the webpack dev
-server idempotently, so both are already up by the time Word tries to
-reconnect to the sideloaded add-in (see §5's WEF sideload finding).
+`scripts/install-autostart.ps1`) starts `opencode serve` and a static HTTPS
+server for the pre-built taskpane bundle idempotently, so both are already up
+by the time Word tries to reconnect to the sideloaded add-in (see §5's WEF
+sideload finding). The static server (`scripts/serve-static.js`) serves the
+`dist/` bundle produced ahead of time by `npm run build`, reusing the same
+`office-addin-dev-certs` certificate and URLs as the webpack dev server;
+this replaced launching `webpack serve` at logon, whose per-boot recompile
+left port 3000 unserved long enough to trigger Word's "ADD-IN ERROR" (§5).
+The webpack dev server (`npm run dev-server`) remains the live-recompile tool
+for active development.
+
+The script also self-heals the `word` MCP connection: on every run it polls
+the live `/mcp` status and, if `word` came up `failed` (a logon-time cold
+start can make opencode's handshake with `word-mcp-live` time out), it tries
+a runtime reconnect (`POST /mcp/word/connect`) and then one `opencode serve`
+restart as a last resort.
 
 ### 3.2 OpenCode server
 
@@ -297,8 +310,9 @@ opencode+office/
 │   ├── taskpane/               chat UI (html/js/css)
 │   └── commands/                generator-office boilerplate ribbon command stub
 ├── scripts/
-│   ├── start-background-services.ps1   idempotent opencode serve + dev server launcher
-│   ├── install-autostart.ps1            writes Startup-folder .vbs autostart wrapper
+│   ├── start-background-services.ps1   idempotent opencode serve + static server launcher (+ MCP self-heal)
+│   ├── serve-static.js                  tiny HTTPS static server for the pre-built dist/ bundle
+│   ├── install-autostart.ps1            builds dist/, writes Startup-folder .vbs autostart wrapper
 │   └── uninstall-autostart.ps1          removes it
 └── tests/
     ├── run-all.ps1              regression runner

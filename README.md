@@ -72,12 +72,27 @@ entry that brings the services up automatically at every Windows logon:
 .\scripts\install-autostart.ps1
 ```
 
-This writes a `.vbs` wrapper to your Startup folder
+`install-autostart.ps1` first runs `npm run build` to produce the taskpane
+bundle in `dist/`, then writes a `.vbs` wrapper to your Startup folder
 (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`) that silently runs
 `scripts\start-background-services.ps1` at logon. That script is idempotent —
 it checks whether ports 3000/4098 are already listening before starting
 anything, so it's safe even if you also start things manually. Logs go to
 `%LOCALAPPDATA%\AI Assistant\logs\`.
+
+On port 3000 the autostart serves the **pre-built** bundle from `dist/` with
+a tiny static HTTPS server (`scripts/serve-static.js`, `npm run serve-static`)
+rather than running `webpack serve`. Compiling the bundle on every cold boot
+used to leave port 3000 unserved for a minute or two after logon — long
+enough that Word's reconnect failed with "ADD-IN ERROR" — so the bundle is
+built ahead of time (at install) and just served as static files, which is
+ready almost immediately. The static server reuses the very same trusted
+`office-addin-dev-certs` certificate and serves the same files at the same
+URLs as the webpack dev server, so nothing about how Word loads the add-in
+changes. **If you edit anything under `src/`, re-run `npm run build` (or
+`.\scripts\install-autostart.ps1`) so the autostart picks up the change** —
+`npm run dev-server` (webpack, live recompile) remains the tool to use while
+actively developing.
 
 The script also self-heals the `word` MCP connection: a logon-time cold start
 can make opencode's handshake with `word-mcp-live` time out, leaving the

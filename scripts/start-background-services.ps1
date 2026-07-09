@@ -1,8 +1,9 @@
 # Idempotently starts the two background services AI Assistant needs (opencode
-# serve + the webpack dev server) so Word can connect to the sideloaded add-in the
-# moment it launches, instead of failing with "ADD-IN ERROR" because nothing was
-# listening yet. Safe to run repeatedly (e.g. once per Windows logon via
-# install-autostart.ps1): each service is skipped if its port is already listening.
+# serve + a static HTTPS server for the pre-built taskpane in dist/) so Word can
+# connect to the sideloaded add-in the moment it launches, instead of failing
+# with "ADD-IN ERROR" because nothing was listening yet. Safe to run repeatedly
+# (e.g. once per Windows logon via install-autostart.ps1): each service is
+# skipped if its port is already listening.
 #
 # After serve is up, this also verifies the `word` MCP connection actually came
 # up. opencode marks an MCP server that failed its startup handshake as "failed"
@@ -63,14 +64,29 @@ function Wait-WordMcpSettled([int]$timeoutSeconds = 120) {
 }
 
 if (Test-PortListening $devServerPort) {
-    Write-Host "webpack dev server already listening on port $devServerPort - skipping"
+    Write-Host "static server already listening on port $devServerPort - skipping"
 } else {
-    Write-Host "Starting webpack dev server on port $devServerPort..."
+    # Serve the pre-built bundle (dist/) rather than running `webpack serve`,
+    # which recompiles on every launch and left port 3000 unserved for 1-2
+    # minutes after a cold boot (Word then failed with "ADD-IN ERROR"). The
+    # build is normally produced ahead of time by install-autostart.ps1 (and
+    # whenever the source changes); only if dist/ is somehow missing do we
+    # build here as a self-healing fallback, accepting the one-time delay.
+    if (-not (Test-Path (Join-Path $root "dist\taskpane.html"))) {
+        Write-Host "dist/ not built yet - building once (npm run build)..."
+        Push-Location $root
+        try {
+            & npm run build *> (Join-Path $logDir "build.log")
+        } finally {
+            Pop-Location
+        }
+    }
+    Write-Host "Starting static server (serving dist/) on port $devServerPort..."
     Start-Process -FilePath "cmd.exe" `
-        -ArgumentList "/c", "cd /d `"$root`" && npm run dev-server" `
+        -ArgumentList "/c", "cd /d `"$root`" && npm run serve-static" `
         -WindowStyle Hidden `
-        -RedirectStandardOutput (Join-Path $logDir "dev-server.log") `
-        -RedirectStandardError (Join-Path $logDir "dev-server.err.log")
+        -RedirectStandardOutput (Join-Path $logDir "static-server.log") `
+        -RedirectStandardError (Join-Path $logDir "static-server.err.log")
 }
 
 if (Test-PortListening $opencodePort) {

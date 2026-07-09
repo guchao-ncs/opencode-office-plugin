@@ -11,6 +11,21 @@ $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Star
 $vbsPath = Join-Path $startupDir "AI Assistant-autostart.vbs"
 $scriptPath = Join-Path $root "scripts\start-background-services.ps1"
 
+# Build the taskpane bundle now, so the very first logon-time launch of the
+# static server has dist/ ready and doesn't have to compile (the whole point of
+# serving a pre-built bundle - see start-background-services.ps1). Rebuild here
+# any time the source changed and you want the autostart to pick it up.
+Write-Host "Building the taskpane bundle (npm run build)..."
+Push-Location $root
+try {
+    & npm run build
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm run build failed - fix the build before installing autostart."
+    }
+} finally {
+    Pop-Location
+}
+
 # The 0 window-style argument to WScript.Shell.Run suppresses any visible
 # window (console flash or otherwise) - this is the standard way to run a
 # script silently at logon without needing a scheduled task or admin rights.
