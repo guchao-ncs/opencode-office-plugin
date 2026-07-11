@@ -37,7 +37,7 @@ async function main() {
       body: `window.Office = {
         onReady: (cb) => Promise.resolve().then(() => cb({ host: 'Word' })),
         HostType: { Word: 'Word' },
-        context: { document: { settings: { set: () => {}, saveAsync: () => {} } } },
+        context: { document: { url: "", settings: { set: () => {}, saveAsync: () => {} } } },
       };`,
     });
   });

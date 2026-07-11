@@ -8,8 +8,8 @@ built and why*.
 ## 1. Overview
 
 AI Assistant is a Word task pane add-in that lets a user chat with an AI
-agent (OpenCode) and have that agent read and edit the currently open Word
-document. It is entirely local and non-admin: no data leaves the machine
+agent (OpenCode) and have that agent read and edit the Word document hosting
+the task pane. It is entirely local and non-admin: no data leaves the machine
 except to whatever LLM provider OpenCode is configured to call, and nothing
 requires elevated privileges to install or run.
 
@@ -27,12 +27,14 @@ Three independent processes cooperate at runtime:
                                                      ▼
                                         ┌──────────────────────────┐
                                         │ word-mcp-live (uvx)       │
-                                        │  win32com ── GetActiveObject
+                                        │  live tools: COM on Win,
+                                        │  JXA on macOS upstream
                                         └────────────┬─────────────┘
                                                      ▼
                                         ┌──────────────────────────┐
-                                        │ Word.Application (COM)    │
-                                        │  the same open document   │
+                                        │ Microsoft Word            │
+                                        │  target document must be  │
+                                        │  explicitly matched       │
                                         └──────────────────────────┘
 ```
 
@@ -49,7 +51,7 @@ stdio as a normal MCP tool server — both are off-the-shelf, not hand-rolled.
 | Build | Webpack 5 + Babel, `webpack-dev-server` | HTTPS dev server on `:3000` via `office-addin-dev-certs` |
 | Markdown rendering | [`marked`](https://www.npmjs.com/package/marked) | renders assistant replies; see §4 for the XSS mitigation |
 | Agent runtime | [`opencode`](https://opencode.ai) CLI (`opencode-ai` npm package), run as `opencode serve` | real REST API, not a custom wrapper |
-| Word automation | [`word-mcp-live`](https://github.com/ykarapazar/word-mcp-live), invoked via `uvx --from word-mcp-live word_mcp_server` | Python, `pywin32`-based, 40+ fixed COM automation tools; runs isolated via `uv` |
+| Word automation | [`word-mcp-live`](https://github.com/ykarapazar/word-mcp-live), invoked via `uvx --from word-mcp-live word_mcp_server` | Upstream documents 124 tools: cross-platform `.docx` tools plus live tools using Windows COM and macOS JXA. This project still treats Windows desktop Word as the tested production target. |
 | Test automation | Windows PowerShell 5.1 scripts (`tests/phase*.ps1`) + `playwright-core` for browser-driven UI tests | reuses the system-installed Edge instead of downloading a bundled Chromium |
 
 ## 3. Components
@@ -61,11 +63,15 @@ stdio as a normal MCP tool server — both are off-the-shelf, not hand-rolled.
 - `taskpane.js` — owns the OpenCode session lifecycle and chat rendering:
   - `ensureSession()` — lazily `POST /session` once per task pane load,
     caches the returned `session.id` in memory (`sessionId` module var).
-  - `sendToOpenCode(text)` — `POST /session/{id}/message` with
-    `{ model: { providerID, modelID }, parts: [{ type: "text", text }] }`,
-    concatenates all returned `text`-type parts as the reply. The model
-    is hardcoded via `OPENCODE_MODEL` near the top of the file — there is
-    no in-UI model picker (MVP scope).
+  - `getActiveDocumentText()` — reads `context.document.body.text` through
+    Word JavaScript APIs and injects it as hidden context on a new
+    OpenCode session's first user message.
+  - `getSelectedText()` — reads `context.document.getSelection().text` on
+    every user message and injects it as per-turn hidden context.
+  - `streamAssistantReply()` — sends `POST /session/{id}/prompt_async`
+    and renders reply deltas from OpenCode's global `GET /event` SSE
+    stream, falling back to blocking `POST /session/{id}/message` if SSE is
+    unavailable.
   - `appendMessage(role, text)` — escapes the text through a `textContent`
     → `innerHTML` round trip *before* `marked.parse()`, so any literal
     HTML/script tags coming from the model or the document are rendered as
@@ -73,10 +79,18 @@ stdio as a normal MCP tool server — both are off-the-shelf, not hand-rolled.
 - `taskpane.css` — flex-column chat layout (log grows, input row pinned to
   the bottom); user/assistant/error message bubbles are visually distinct.
 
-The task pane has **no knowledge of Word document content** beyond what the
-user types — it does not read the document itself. All document access goes
-through the agent → MCP tool path (§3.3), not through Office.js APIs called
-from the task pane.
+The task pane reads enough Word document state to improve grounding: whole
+body text once per new OpenCode session and selected text on every turn.
+These Office.js reads are context only. Actual mutation still goes through
+the agent → MCP tool path (§3.3), because `word-mcp-live` has the richer
+live formatting/editing surface.
+
+Current gap: the Office.js reads are scoped to the document hosting the task
+pane, but `word-mcp-live` live tools can target Word's automation-active
+document when their optional `filename` argument is omitted. That means
+multi-document Word sessions can produce a mismatch: the model reasons over
+document A while MCP mutates document B. Section 3.4 defines the required
+document-binding fix.
 
 `manifest.xml`'s ribbon button uses the `Office.AutoShowTaskpaneWithDocument`
 sentinel `<TaskpaneId>`, and `Office.onReady` tags each document (via
@@ -137,19 +151,99 @@ instructions in the README always include `--cors`.
 
 OpenCode spawns this as a local subprocess over stdio (standard MCP
 transport) whenever an agent needs a Word tool — no HTTP hop, no custom
-protocol glue. `word-mcp-live` itself calls `win32com.client.GetActiveObject
-("Word.Application")` to attach to whichever Word instance is already
-running; it does not launch Word. This is why a document must already be
-open before asking the agent to edit it.
+protocol glue. On Windows, `word-mcp-live` live tools attach to an already
+running Microsoft Word instance via COM; on macOS upstream uses JXA for live
+tools. It does not launch Word. This is why a document must already be open
+before asking the agent to edit it.
+
+Upstream live tools accept an optional `filename` parameter. When omitted,
+their documented behavior is to use the active document; when provided, the
+tool attempts to find the matching open document. The current code relies on
+model behavior and hidden instructions, not a hard protocol guarantee, so
+the add-in must explicitly bind the document before destructive live edits
+(§3.4).
 
 This design was chosen over the PRD's original
 `run_word_com_automation(script: str)` tool (arbitrary Python execution
 against the COM object) specifically because `word-mcp-live` exposes a
-**fixed, auditable set of ~40 tools** (set heading style, insert table,
-apply shading, replace selection, etc.) with tracked-changes support,
+**fixed, auditable tool set** (set heading style, insert table, apply
+shading, replace selection, etc.) with tracked-changes support,
 instead of an open code-execution surface.
 
-### 3.4 Settings panel (gear icon): System Instruction, Persona & Prompt library
+### 3.4 Document identity binding before live mutation
+
+Problem: two different "current document" concepts currently coexist.
+Office.js APIs run inside the task pane and therefore read the document that
+hosts the add-in. `word-mcp-live` live tools run outside the task pane and,
+when called without `filename`, operate on Word's active automation document.
+Those are usually the same in single-document use, but not guaranteed when
+multiple Word documents/windows are open, when focus changes mid-run, or when
+an old OpenCode session still contains a previous document snapshot.
+
+Recommended implementation:
+
+1. Capture document identity in the task pane before each send:
+   `Office.context.document.url` for saved documents, a display name if
+   available, a generated add-in session nonce, body text length, and a
+   stable text hash/preview from `getActiveDocumentText()`.
+2. Reset `sessionId` when the document URL/name/hash changes. This prevents
+   old hidden document context from surviving after the user switches or
+   substantially changes documents.
+3. Add a hidden "target document contract" to `buildPromptParts()`:
+   the agent must call `word_live_list_open` before destructive live tools,
+   match the task-pane document to exactly one open Word document, and pass
+   that matched `filename` into every subsequent `word_live_*` call.
+4. Fail closed on ambiguity:
+   if there is no exact saved-path/name match, multiple matches, or more
+   than one unsaved `Document1`-style document, the assistant should ask the
+   user to save the file, close duplicates, or explicitly activate the right
+   document before editing.
+5. For read-only analysis, Office.js context alone is acceptable. For any
+   mutation, the `word_live_list_open` match and explicit `filename` pass are
+   required.
+
+Unsaved new-document handling:
+
+- A newly created unsaved document has no stable file path, so
+  `Office.context.document.url` may be empty and `word_live_list_open` may
+  only expose weak display names such as `Document1`. Those names are not a
+  durable identity and can collide with other unsaved documents.
+- Read-only actions are safe: summarizing, analyzing, drafting text in chat,
+  and rewriting selected text as a suggestion can use the Office.js body or
+  selection context from the taskpane document.
+- Destructive live edits must fail closed unless exactly one unsaved Word
+  document is open and the user confirms that it is the intended target for
+  this turn. If multiple unsaved documents are open, ask the user to save the
+  target document first.
+- Recommended warning text:
+  `This document has not been saved yet, so I cannot reliably bind MCP edits
+  to it while multiple unsaved Word documents may be open. Save the document
+  first, or close other unsaved Word documents, then try again.`
+- Optional stronger binding: the task pane can write a generated nonce into
+  a hidden custom document property, bookmark, or content control and require
+  MCP to verify it before editing. This gives an unsaved document a
+  cross-process marker, but it is itself a document mutation and should be
+  implemented deliberately, with visible-content pollution avoided.
+
+Approaches considered:
+
+- **Keep relying on the active Word document.** Lowest implementation cost,
+  but unsafe and inconsistent with the side-panel UX when multiple documents
+  are open.
+- **Use Office.js for all mutations.** Strong document binding because the
+  add-in can only touch its host document, but much weaker coverage for
+  tracked changes, layout diagnostics, native Word formatting, undo, and
+  automation scenarios already covered by `word-mcp-live`.
+- **Fork or upstream a persistent document-token feature in
+  `word-mcp-live`.** Best long-term robustness if accepted upstream: the
+  add-in could bind once and every tool call would use that token. Higher
+  maintenance if kept as a private fork.
+- **Recommended hybrid.** Keep `word-mcp-live`, but make the add-in provide
+  explicit document identity and require `word_live_list_open` plus explicit
+  `filename` for destructive live tools. This avoids a new automation
+  surface while closing the practical multi-document mismatch.
+
+### 3.5 Settings panel (gear icon): System Instruction, Persona & Prompt library
 
 The task pane's settings panel (`#settings-toggle`/`#settings-panel` in
 `taskpane.html`) has two tabs. The **Settings** tab maintains two per-user
@@ -228,7 +322,7 @@ included by id) and closes the panel.
   tools are not sandboxed to the project's working directory, an approval
   prompt can't be answered from the chat UI (the request would silently
   hang), and a per-path grant can't be applied at runtime because
-  `PATCH /config` doesn't persist (§5) — while the gear panel (§3.4) must
+  `PATCH /config` doesn't persist (§5) — while the gear panel (§3.5) must
   support System Instructions that point the agent at arbitrary local
   folders without a server restart. The mitigating context is that this is
   a local, single-user tool whose agent only acts on the user's own
@@ -270,7 +364,7 @@ included by id) and closes the panel.
   trying to undo the persistent registration.
 
 - **`PATCH /config` does not persist anything, despite what the docs
-  imply.** While building the gear-icon settings feature (§3.4, at the
+  imply.** While building the gear-icon settings feature (§3.5, at the
   time a harness-root config), a
   live `opencode serve` instance (v1.16.2) was tested directly with `curl`:
   `PATCH /config` returns `HTTP 200` and echoes the request body back (or
@@ -280,7 +374,7 @@ included by id) and closes the panel.
   (`username`), with and without `?directory=`/`?workspace=` query
   params. Because of this, the settings feature does **not** attempt a
   runtime patch — it sidesteps server config entirely with a hidden
-  first-message instruction (§3.4), enabled where file access is involved
+  first-message instruction (§3.5), enabled where file access is involved
   by a blanket `external_directory: "allow"` in the static config (§4).
 
 ## 6. Testing strategy
