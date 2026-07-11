@@ -59,6 +59,15 @@ const SYSTEM_INSTRUCTION_STORAGE_KEY = "openCodeSystemInstruction";
 const PERSONA_STORAGE_KEY = "openCodePersona";
 const LEGACY_HARNESS_STORAGE_KEY = "openCodeHarnessRoot";
 
+// Set once at load from the static server's /harness-info signal (see
+// applyHarnessMode). Non-null = a Solution Architect harness vault was
+// detected on this machine, and its absolute root path is here. In that
+// "harness mode" the manual System Instruction/Persona fields are disabled
+// and behavior instead comes from a scoped instruction pointing the agent at
+// the vault's identity/memory files (see harnessHiddenBlock). Stays null in
+// generic mode (no vault detected, or served without /harness-info).
+let harnessRoot = null;
+
 // Playful rotating status words shown while waiting on the model, in the
 // style of Claude Code's CLI status line ("Pontificating...", "Sussing...").
 const THINKING_WORDS = [
@@ -118,6 +127,7 @@ Office.onReady((info) => {
     document.getElementById("library-add").addEventListener("click", onLibraryAdd);
     document.getElementById("library-save").addEventListener("click", onLibrarySave);
     document.getElementById("library-reset").addEventListener("click", onLibraryReset);
+    document.getElementById("memory-save").addEventListener("click", onSaveToMemory);
     document.getElementById("prompt-ideas-toggle").addEventListener("click", togglePromptIdeas);
 
     // Tags this document so Word auto-shows the taskpane the next time this same
@@ -133,6 +143,12 @@ Office.onReady((info) => {
     document.getElementById("system-instruction-input").value =
       localStorage.getItem(SYSTEM_INSTRUCTION_STORAGE_KEY) || "";
     document.getElementById("persona-input").value = localStorage.getItem(PERSONA_STORAGE_KEY) || "";
+
+    // Ask the static server whether a harness vault was detected on this
+    // machine, and switch the Settings tab to harness mode if so. Best-effort:
+    // on webpack dev-server / nginx (no /harness-info) or any error, this
+    // silently leaves generic mode in place.
+    applyHarnessMode();
 
     // Open the SSE stream up front (not lazily on first send) so it has time to
     // reach OPEN before any message is sent - see connectEventStream()'s comment
@@ -162,6 +178,106 @@ Office.onReady((info) => {
 function onSettingsToggle() {
   const panel = document.getElementById("settings-panel");
   panel.style.display = panel.style.display === "none" ? "flex" : "none";
+}
+
+// Queries the static server's harness signal and, if a vault was detected,
+// switches the Settings tab into harness mode: the manual System
+// Instruction/Persona fields are disabled (identity comes from the vault via
+// harnessHiddenBlock), Save/Clear are replaced by "Save to memory", and a
+// banner shows which vault is in effect. Best-effort - on any error, or when
+// served without /harness-info (webpack dev-server / nginx), it leaves the
+// editable generic mode untouched.
+async function applyHarnessMode() {
+  let info;
+  try {
+    const res = await fetch("/harness-info", { cache: "no-store" });
+    if (!res.ok) {
+      return;
+    }
+    info = await res.json();
+  } catch {
+    return;
+  }
+  if (!info || info.mode !== "harness" || !info.root) {
+    return;
+  }
+  harnessRoot = info.root;
+
+  // Identity comes from the vault, so the manual System Instruction/Persona
+  // fields don't apply - hide them entirely and explain via the banner.
+  document.getElementById("manual-settings-fields").style.display = "none";
+  const banner = document.getElementById("harness-banner");
+  banner.textContent =
+    `Harness mode — identity, user context and conventions come from ${harnessRoot}\\_agentic ` +
+    `(AGENTS.md / SOUL.md / USER.md). Use "Save to memory" (next to "Prompt ideas") to write this ` +
+    `conversation's key points back to the vault.`;
+  banner.style.display = "block";
+
+  // Reveal the "Save to memory" pill in the toolbar beside "Prompt ideas".
+  document.getElementById("memory-save").style.display = "flex";
+  document.getElementById("prompt-ideas-toolbar").style.display = "flex";
+}
+
+// "Save to memory" (harness mode only): fires a silent turn asking the agent
+// to append this conversation's key points to the vault's daily note and
+// promote durable items to MEMORY.md, per the harness's own memory rules -
+// honoring the memory-graph lock and never running maintenance scripts. Uses
+// the current session (not a fresh one) so the agent has the conversation to
+// summarize.
+// The "Save to memory" pill lives in the toolbar (not the settings panel), so
+// feedback is shown on the button label itself - "Saving..." → "Saved ✓" /
+// "Nothing to save" / "Save failed" - reverting after a moment.
+async function onSaveToMemory() {
+  if (!harnessRoot) {
+    return;
+  }
+  const btn = document.getElementById("memory-save");
+  const label = document.getElementById("memory-save-label");
+  const restore = (text) => {
+    setTimeout(() => {
+      label.textContent = "Save to memory";
+      btn.disabled = false;
+    }, 2500);
+    label.textContent = text;
+  };
+  if (isSending) {
+    // A reply is still streaming (or a tool call is stuck) on this session -
+    // posting the memory-write now would just queue behind it and hang on
+    // "Saving...". Make the user wait for the current turn to finish first.
+    btn.disabled = true;
+    restore("Finish the reply first");
+    return;
+  }
+  if (!sessionId) {
+    btn.disabled = true;
+    restore("Nothing to save yet");
+    return;
+  }
+  btn.disabled = true;
+  label.textContent = "Saving...";
+  try {
+    await sendToOpenCodeBlocking(sessionId, [{ type: "text", text: buildSaveToMemoryInstruction() }], 150000);
+    restore("Saved ✓");
+  } catch {
+    restore("Save failed");
+  }
+}
+
+function buildSaveToMemoryInstruction() {
+  const os = `${harnessRoot}\\_agentic\\os`;
+  return (
+    "Save the key points of THIS conversation into the Solution Architect harness memory, following the memory " +
+    `rules in ${os}\\AGENTS.md. Specifically:\n` +
+    `1. If ${os}\\memory-graph\\.memory-graph.lock exists, do NOT write - reply exactly "memory is locked, try ` +
+    'again later" and stop.\n' +
+    `2. Otherwise append a concise, structured summary of what we discussed/decided/still-to-follow-up to ` +
+    `${os}\\memory\\<today's date YYYY-MM-DD>.md (create the file if it doesn't exist; NEVER overwrite existing ` +
+    "content - append only).\n" +
+    `3. Promote any durable feedback, decisions, or boundaries worth remembering long-term into ${os}\\MEMORY.md ` +
+    "(create it if missing; curate, don't just dump).\n" +
+    "Do NOT run any maintenance scripts, memory-graph, or graphify. When done, reply with a one-line confirmation " +
+    "of what you wrote and to which file(s)."
+  );
 }
 
 function onSettingsSave() {
@@ -522,8 +638,13 @@ function getSelectedText() {
 const SUGGESTIONS_MARKER_RE = /<!--\s*SUGGESTIONS:([\s\S]*?)-->/i;
 const SUGGESTIONS_TAIL_RE = /<!--\s*SUGGESTIONS:[\s\S]*$/i;
 
-// The gear-panel Settings fields, or null when neither is configured.
+// What to inject on a session's first message: a harness marker when a vault
+// was detected (harness mode overrides the manual fields), otherwise the
+// gear-panel System Instruction/Persona, or null when nothing is configured.
 function getSavedCustomization() {
+  if (harnessRoot) {
+    return { harnessRoot };
+  }
   const systemInstruction = (localStorage.getItem(SYSTEM_INSTRUCTION_STORAGE_KEY) || "").trim();
   const persona = (localStorage.getItem(PERSONA_STORAGE_KEY) || "").trim();
   if (!systemInstruction && !persona) {
@@ -532,13 +653,41 @@ function getSavedCustomization() {
   return { systemInstruction, persona };
 }
 
+// Scoped harness instruction sent on a session's FIRST message when a vault is
+// detected. It points the agent at the vault's identity/memory files and has
+// it adopt them, but deliberately draws a tight boundary: NO maintenance
+// scripts, memory-graph, graphify, or the memory-maintenance checkpoint (those
+// are the CLI-agent's job and would be slow/inappropriate from a Word turn),
+// and no unprompted edits. This is a controlled, narrow read of the harness -
+// not full harness participation (opencode is not run inside the vault).
+function harnessHiddenBlock(root) {
+  return (
+    "A Solution Architect harness is installed on this machine at: " +
+    root +
+    "\n\nBefore handling the user's request below, read these files with your file tools and adopt the identity, " +
+    "user context, and working conventions they define, for this entire conversation:\n" +
+    "- " + root + "\\_agentic\\os\\SOUL.md  (who you are)\n" +
+    "- " + root + "\\_agentic\\os\\USER.md  (who you're helping)\n" +
+    "- " + root + "\\_agentic\\os\\AGENTS.md  (operating conventions)\n" +
+    "For continuity, also read today's and yesterday's " + root + "\\_agentic\\os\\memory\\YYYY-MM-DD.md and " +
+    root + "\\_agentic\\os\\MEMORY.md IF they exist (skip silently if they don't).\n\n" +
+    "Hard boundaries for this Word add-in context: do NOT run any maintenance scripts, the memory-maintenance " +
+    "checkpoint, memory-graph, or graphify - even if AGENTS.md tells you to; those are handled elsewhere. Do NOT " +
+    "modify any file in the harness unless the user explicitly asks (memory writes happen only via the add-in's " +
+    "\"Save to memory\" button). Keep the persona's concise, structured style."
+  );
+}
+
 // Hidden instruction sent on a session's FIRST message (same isNew gating as
-// the whole-document context) carrying the gear panel's System Instruction /
-// Persona fields. This client-side injection is what makes the settings take
-// effect live, with no server restart - opencode's PATCH /config was
-// confirmed not to persist anything (see tech-design-spec.md §5), so
-// server-side config is not an option for per-user runtime settings.
+// the whole-document context). In harness mode it carries the scoped harness
+// block; otherwise it carries the gear panel's System Instruction / Persona
+// fields. This client-side injection is what makes either take effect live,
+// with no server restart - opencode's PATCH /config was confirmed not to
+// persist anything (see tech-design-spec.md §5).
 function customizationHiddenBlock(customization) {
+  if (customization.harnessRoot) {
+    return harnessHiddenBlock(customization.harnessRoot);
+  }
   const parts = ["The user has configured standing settings for this assistant in the add-in's Settings panel."];
   if (customization.persona) {
     parts.push(
@@ -809,6 +958,7 @@ async function initializeDocumentSuggestions() {
   if (!documentContext || !documentContext.trim()) {
     return;
   }
+  document.getElementById("prompt-ideas-toggle").style.display = "flex";
   document.getElementById("prompt-ideas-toolbar").style.display = "flex";
 }
 
