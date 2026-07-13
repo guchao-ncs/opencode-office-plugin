@@ -16,3 +16,7 @@ Thumbs.db
 # Local-only files not meant for the shared repo
 /config.json
 /AllegroGraph_Partnership_Proposal.docx
+
+# Python cache files
+__pycache__/
+*.pyc
