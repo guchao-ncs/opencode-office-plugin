@@ -99,6 +99,10 @@ let lastDocumentUrl = null;
 let lastDocumentHash = null;
 let lastDocumentText = null;
 let documentSessionNonce = null;
+// True when the last ensureSession() could not read the document (Word.run
+// failed or hit getActiveDocumentText's timeout). Lets the UI say so instead
+// of silently degrading to "no ideas"/no document context.
+let documentReadFailed = false;
 
 // Set by a doc-suggestion chip (see renderDocSuggestions) that needs to carry
 // extra hidden guidance alongside its literal chip text - e.g. the "Revise
@@ -568,17 +572,30 @@ async function onSubmit(event) {
 }
 
 async function ensureSession() {
-  const docText = await getActiveDocumentText() || "";
-  const docUrl = (typeof Office !== "undefined" && Office.context && Office.context.document) ? Office.context.document.url : null;
-  const docHash = computeTextHash(docText);
+  // getActiveDocumentText() resolves null when the read fails or times out.
+  // Only re-derive the document identity (and possibly reset the session) from
+  // a read that actually SUCCEEDED: coercing a failed read to "" would hash as
+  // "empty", look like "the document changed to nothing", and so silently reset
+  // the session, wipe sentPromptTexts, and drop the document context - turning a
+  // transient read hiccup into a lost conversation. On failure we keep the last
+  // known-good identity instead and let the caller surface the problem.
+  const docText = await getActiveDocumentText();
+  documentReadFailed = docText === null && typeof Word !== "undefined" && !!Word.run;
+  if (docText !== null) {
+    const docUrl =
+      typeof Office !== "undefined" && Office.context && Office.context.document
+        ? Office.context.document.url
+        : null;
+    const docHash = computeTextHash(docText);
 
-  if (sessionId && (docUrl !== lastDocumentUrl || docHash !== lastDocumentHash)) {
-    sessionId = null;
-    sentPromptTexts = [];
+    if (sessionId && (docUrl !== lastDocumentUrl || docHash !== lastDocumentHash)) {
+      sessionId = null;
+      sentPromptTexts = [];
+    }
+    lastDocumentUrl = docUrl;
+    lastDocumentHash = docHash;
+    lastDocumentText = docText;
   }
-  lastDocumentUrl = docUrl;
-  lastDocumentHash = docHash;
-  lastDocumentText = docText;
 
   if (sessionId) {
     return { id: sessionId, isNew: false };
@@ -689,18 +706,40 @@ function buildDocumentIdentityBlock(docText) {
 // exists inside a real Word host - the office.js stub used by headless
 // browser tests doesn't define it - so this resolves null there and the
 // caller just sends the message without document context, same as before.
-function getActiveDocumentText() {
+// Resolves null when the document can't be read - including when the read
+// takes longer than `timeoutMs`. Without that timeout a slow/stuck Word.run
+// (observed on a 100-page document) never settles, so ensureSession() never
+// returns and the caller hangs forever with no request ever reaching opencode
+// - which is exactly how "Prompt ideas" ended up spinning on "Thinking of
+// ideas..." indefinitely. 30s is deliberately generous: a legitimate
+// whole-body read of a 100-page document takes single-digit seconds (the same
+// read succeeds for "summarize the document"), so this only trips on a genuine
+// stall, never on a merely-large document.
+function getActiveDocumentText(timeoutMs = 30000) {
   return new Promise((resolve) => {
     if (typeof Word === "undefined" || !Word.run) {
       resolve(null);
       return;
     }
+    let settled = false;
+    const settle = (value) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+    // Word.run cannot be cancelled - on timeout we just stop waiting for it.
+    const timer = setTimeout(() => settle(null), timeoutMs);
     Word.run(async (context) => {
       const body = context.document.body;
       body.load("text");
       await context.sync();
-      resolve(body.text || "");
-    }).catch(() => resolve(null));
+      clearTimeout(timer);
+      settle(body.text || "");
+    }).catch(() => {
+      clearTimeout(timer);
+      settle(null);
+    });
   });
 }
 
@@ -987,9 +1026,14 @@ function buildPromptIdeasParts(documentContext, customization, library) {
   hidden.push(
     "This is a silent, internal request to pick suggested next prompts from a fixed library - it is not shown to " +
       "the user and does not need a conversational answer. Below is a library of prompt templates, each with an " +
-      "id and a template (some templates contain bracketed placeholders like [Project/Topic] or [Text] that must " +
+      'id and a "prompt" (some contain bracketed placeholders like [Project/Topic] or [Text] that must ' +
       "be replaced, never left in literally). Library:\n" +
-      JSON.stringify(library.map(({ id, category, template }) => ({ id, category, template }))) +
+      // Deliberately renamed from "template" to "prompt" here: when the library
+      // field was called "template", the model would sometimes mirror that name
+      // in its reply ({"id":..,"template":..}) instead of the requested "text",
+      // and every suggestion was dropped. Keeping the input field name distinct
+      // from the requested output field name ("text") removes that ambiguity.
+      JSON.stringify(library.map(({ id, category, template }) => ({ id, category, prompt: template }))) +
       "\n\nPick up to 4 of the templates most relevant to this specific document and, if applicable, the " +
       "conversation so far in this session - skip any that clearly don't fit (e.g. contract-clause extraction on " +
       "a document that isn't a contract). For each one you pick, derive a concrete, ready-to-send version of its " +
@@ -1122,14 +1166,29 @@ async function deriveLibraryPromptIdeas() {
   }
   const chips = [];
   for (const item of parsed) {
-    if (!item || typeof item.id !== "string" || typeof item.text !== "string" || !item.text.trim()) {
+    if (!item || typeof item.id !== "string") {
+      continue;
+    }
+    // The derived sentence is asked for as "text", but the model sometimes
+    // echoes back the field name it saw in the library instead (observed in
+    // the wild: {"id":"exec-summary","template":"..."}), which used to make
+    // every suggestion fail the type check and be dropped silently - the
+    // panel then said "No prompt ideas came back". Accept the aliases.
+    const derived = [item.text, item.prompt, item.template].find(
+      (value) => typeof value === "string" && value.trim()
+    );
+    if (!derived) {
       continue;
     }
     const template = library.find((t) => t.id === item.id);
     if (!template) {
       continue;
     }
-    chips.push({ label: item.text.trim(), text: item.text.trim(), hiddenInstruction: HIDDEN_INSTRUCTIONS[item.id] || null });
+    chips.push({
+      label: derived.trim(),
+      text: derived.trim(),
+      hiddenInstruction: HIDDEN_INSTRUCTIONS[item.id] || null,
+    });
   }
   return chips.slice(0, 4);
 }
@@ -1224,20 +1283,45 @@ async function togglePromptIdeas() {
   container.innerHTML = "";
   const loadingEl = document.createElement("p");
   loadingEl.className = "doc-suggestions-loading";
-  loadingEl.textContent = "Thinking of ideas... (can take up to a couple minutes on longer documents)";
   container.appendChild(loadingEl);
   panel.style.display = "block";
 
+  // This is a blocking round trip (no SSE), so without a live counter the panel
+  // looks frozen for however long the model takes - which on a large document
+  // is tens of seconds. Tick the elapsed time so it's visibly alive.
+  const startedAt = Date.now();
+  const renderLoading = () => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    loadingEl.textContent = `Thinking of ideas... ${seconds}s (longer documents take a while)`;
+  };
+  renderLoading();
+  const ticker = setInterval(renderLoading, 1000);
+
   try {
     const chips = await deriveLibraryPromptIdeas();
+    clearInterval(ticker);
+    if (chips.length === 0 && documentReadFailed) {
+      // Distinguish "couldn't read the document" (the timeout in
+      // getActiveDocumentText) from "the model had nothing to suggest".
+      container.innerHTML = "";
+      const failEl = document.createElement("p");
+      failEl.className = "doc-suggestions-loading";
+      failEl.textContent =
+        "Couldn't read the document (the read timed out - it may be very large or Word is busy). " +
+        'Click "Prompt ideas" to try again.';
+      container.appendChild(failEl);
+      return;
+    }
     renderDocSuggestions(chips);
   } catch (err) {
+    clearInterval(ticker);
     container.innerHTML = "";
     const errorEl = document.createElement("p");
     errorEl.className = "doc-suggestions-loading";
     errorEl.textContent = `Couldn't get prompt ideas (${err.message}). Click "Prompt ideas" to try again.`;
     container.appendChild(errorEl);
   } finally {
+    clearInterval(ticker);
     promptIdeasLoading = false;
     toggleBtn.disabled = false;
   }
