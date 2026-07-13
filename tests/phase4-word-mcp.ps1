@@ -23,10 +23,12 @@ try {
             if ($wordMcp.type -ne "local") {
                 $failures += "mcp.word.type is '$($wordMcp.type)', expected 'local'"
             }
-            $expectedCommand = @("uvx", "--from", "word-mcp-live", "word_mcp_server")
+            $expectedCommand1 = @("uvx", "--from", "word-mcp-live", "word_mcp_server")
+            $expectedCommand2 = @("uv", "run", "--with", "word-mcp-live", "scripts/word_mcp_launcher.py")
             $actualCommand = @($wordMcp.command)
-            if (($actualCommand -join " ") -ne ($expectedCommand -join " ")) {
-                $failures += "mcp.word.command is '$($actualCommand -join ' ')', expected '$($expectedCommand -join ' ')' (the word-mcp-live PyPI package exposes the 'word_mcp_server' executable, not 'word-mcp-live')"
+            $actualStr = $actualCommand -join " "
+            if ($actualStr -ne ($expectedCommand1 -join " ") -and $actualStr -ne ($expectedCommand2 -join " ")) {
+                $failures += "mcp.word.command is '$actualStr', expected '$($expectedCommand2 -join ' ')' (to support multiple Word desktop instances)"
             }
         }
     }

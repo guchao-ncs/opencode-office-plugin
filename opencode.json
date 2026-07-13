@@ -6,7 +6,7 @@
   "mcp": {
     "word": {
       "type": "local",
-      "command": ["uvx", "--from", "word-mcp-live", "word_mcp_server"],
+      "command": ["uv", "run", "--with", "word-mcp-live", "word_mcp_server"],
       "enabled": true,
       "timeout": 90000,
       "environment": {
