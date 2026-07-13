@@ -24,7 +24,7 @@ except ImportError:
 
 # Keep references to the original functions
 original_get_word_app = word_com.get_word_app
-original_find_open_document = word_com.find_open_document
+original_find_document = word_com.find_document
 
 def get_filename_from_stack():
     try:
@@ -114,7 +114,7 @@ def patched_get_word_app():
     except Exception:
         return win32com.client.GetActiveObject("Word.Application")
 
-def patched_find_open_document(app, filename=None):
+def patched_find_document(app, filename=None):
     if not filename:
         try:
             return app.ActiveDocument
@@ -156,13 +156,13 @@ def patched_find_open_document(app, filename=None):
             
     # Fallback to original
     try:
-        return original_find_open_document(app, filename)
+        return original_find_document(app, filename)
     except Exception:
         return None
 
 # Apply the patches
 word_com.get_word_app = patched_get_word_app
-word_com.find_open_document = patched_find_open_document
+word_com.find_document = patched_find_document
 
 # Run the server
 if __name__ == '__main__':
