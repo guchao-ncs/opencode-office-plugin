@@ -99,6 +99,10 @@ let lastDocumentUrl = null;
 let lastDocumentHash = null;
 let lastDocumentText = null;
 let documentSessionNonce = null;
+// True when the last ensureSession() could not read the document (Word.run
+// failed or hit getActiveDocumentText's timeout). Lets the UI say so instead
+// of silently degrading to "no ideas"/no document context.
+let documentReadFailed = false;
 
 // Set by a doc-suggestion chip (see renderDocSuggestions) that needs to carry
 // extra hidden guidance alongside its literal chip text - e.g. the "Revise
@@ -213,8 +217,7 @@ async function applyHarnessMode() {
   const banner = document.getElementById("harness-banner");
   banner.textContent =
     `Harness mode — identity, user context and conventions come from ${harnessRoot}\\_agentic ` +
-    `(AGENTS.md / SOUL.md / USER.md). Use "Save to memory" (next to "Prompt ideas") to write this ` +
-    `conversation's key points back to the vault.`;
+    `(AGENTS.md / SOUL.md / USER.md).`;
   banner.style.display = "block";
 
   // Reveal the "Save to memory" pill in the toolbar beside "Prompt ideas".
@@ -569,17 +572,30 @@ async function onSubmit(event) {
 }
 
 async function ensureSession() {
-  const docText = await getActiveDocumentText() || "";
-  const docUrl = (typeof Office !== "undefined" && Office.context && Office.context.document) ? Office.context.document.url : null;
-  const docHash = computeTextHash(docText);
+  // getActiveDocumentText() resolves null when the read fails or times out.
+  // Only re-derive the document identity (and possibly reset the session) from
+  // a read that actually SUCCEEDED: coercing a failed read to "" would hash as
+  // "empty", look like "the document changed to nothing", and so silently reset
+  // the session, wipe sentPromptTexts, and drop the document context - turning a
+  // transient read hiccup into a lost conversation. On failure we keep the last
+  // known-good identity instead and let the caller surface the problem.
+  const docText = await getActiveDocumentText();
+  documentReadFailed = docText === null && typeof Word !== "undefined" && !!Word.run;
+  if (docText !== null) {
+    const docUrl =
+      typeof Office !== "undefined" && Office.context && Office.context.document
+        ? Office.context.document.url
+        : null;
+    const docHash = computeTextHash(docText);
 
-  if (sessionId && (docUrl !== lastDocumentUrl || docHash !== lastDocumentHash)) {
-    sessionId = null;
-    sentPromptTexts = [];
+    if (sessionId && (docUrl !== lastDocumentUrl || docHash !== lastDocumentHash)) {
+      sessionId = null;
+      sentPromptTexts = [];
+    }
+    lastDocumentUrl = docUrl;
+    lastDocumentHash = docHash;
+    lastDocumentText = docText;
   }
-  lastDocumentUrl = docUrl;
-  lastDocumentHash = docHash;
-  lastDocumentText = docText;
 
   if (sessionId) {
     return { id: sessionId, isNew: false };
@@ -690,18 +706,40 @@ function buildDocumentIdentityBlock(docText) {
 // exists inside a real Word host - the office.js stub used by headless
 // browser tests doesn't define it - so this resolves null there and the
 // caller just sends the message without document context, same as before.
-function getActiveDocumentText() {
+// Resolves null when the document can't be read - including when the read
+// takes longer than `timeoutMs`. Without that timeout a slow/stuck Word.run
+// (observed on a 100-page document) never settles, so ensureSession() never
+// returns and the caller hangs forever with no request ever reaching opencode
+// - which is exactly how "Prompt ideas" ended up spinning on "Thinking of
+// ideas..." indefinitely. 30s is deliberately generous: a legitimate
+// whole-body read of a 100-page document takes single-digit seconds (the same
+// read succeeds for "summarize the document"), so this only trips on a genuine
+// stall, never on a merely-large document.
+function getActiveDocumentText(timeoutMs = 30000) {
   return new Promise((resolve) => {
     if (typeof Word === "undefined" || !Word.run) {
       resolve(null);
       return;
     }
+    let settled = false;
+    const settle = (value) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+    // Word.run cannot be cancelled - on timeout we just stop waiting for it.
+    const timer = setTimeout(() => settle(null), timeoutMs);
     Word.run(async (context) => {
       const body = context.document.body;
       body.load("text");
       await context.sync();
-      resolve(body.text || "");
-    }).catch(() => resolve(null));
+      clearTimeout(timer);
+      settle(body.text || "");
+    }).catch(() => {
+      clearTimeout(timer);
+      settle(null);
+    });
   });
 }
 
@@ -988,9 +1026,14 @@ function buildPromptIdeasParts(documentContext, customization, library) {
   hidden.push(
     "This is a silent, internal request to pick suggested next prompts from a fixed library - it is not shown to " +
       "the user and does not need a conversational answer. Below is a library of prompt templates, each with an " +
-      "id and a template (some templates contain bracketed placeholders like [Project/Topic] or [Text] that must " +
+      'id and a "prompt" (some contain bracketed placeholders like [Project/Topic] or [Text] that must ' +
       "be replaced, never left in literally). Library:\n" +
-      JSON.stringify(library.map(({ id, category, template }) => ({ id, category, template }))) +
+      // Deliberately renamed from "template" to "prompt" here: when the library
+      // field was called "template", the model would sometimes mirror that name
+      // in its reply ({"id":..,"template":..}) instead of the requested "text",
+      // and every suggestion was dropped. Keeping the input field name distinct
+      // from the requested output field name ("text") removes that ambiguity.
+      JSON.stringify(library.map(({ id, category, template }) => ({ id, category, prompt: template }))) +
       "\n\nPick up to 4 of the templates most relevant to this specific document and, if applicable, the " +
       "conversation so far in this session - skip any that clearly don't fit (e.g. contract-clause extraction on " +
       "a document that isn't a contract). For each one you pick, derive a concrete, ready-to-send version of its " +
@@ -1123,14 +1166,29 @@ async function deriveLibraryPromptIdeas() {
   }
   const chips = [];
   for (const item of parsed) {
-    if (!item || typeof item.id !== "string" || typeof item.text !== "string" || !item.text.trim()) {
+    if (!item || typeof item.id !== "string") {
+      continue;
+    }
+    // The derived sentence is asked for as "text", but the model sometimes
+    // echoes back the field name it saw in the library instead (observed in
+    // the wild: {"id":"exec-summary","template":"..."}), which used to make
+    // every suggestion fail the type check and be dropped silently - the
+    // panel then said "No prompt ideas came back". Accept the aliases.
+    const derived = [item.text, item.prompt, item.template].find(
+      (value) => typeof value === "string" && value.trim()
+    );
+    if (!derived) {
       continue;
     }
     const template = library.find((t) => t.id === item.id);
     if (!template) {
       continue;
     }
-    chips.push({ label: item.text.trim(), text: item.text.trim(), hiddenInstruction: HIDDEN_INSTRUCTIONS[item.id] || null });
+    chips.push({
+      label: derived.trim(),
+      text: derived.trim(),
+      hiddenInstruction: HIDDEN_INSTRUCTIONS[item.id] || null,
+    });
   }
   return chips.slice(0, 4);
 }
@@ -1225,20 +1283,45 @@ async function togglePromptIdeas() {
   container.innerHTML = "";
   const loadingEl = document.createElement("p");
   loadingEl.className = "doc-suggestions-loading";
-  loadingEl.textContent = "Thinking of ideas... (can take up to a couple minutes on longer documents)";
   container.appendChild(loadingEl);
   panel.style.display = "block";
 
+  // This is a blocking round trip (no SSE), so without a live counter the panel
+  // looks frozen for however long the model takes - which on a large document
+  // is tens of seconds. Tick the elapsed time so it's visibly alive.
+  const startedAt = Date.now();
+  const renderLoading = () => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    loadingEl.textContent = `Thinking of ideas... ${seconds}s (longer documents take a while)`;
+  };
+  renderLoading();
+  const ticker = setInterval(renderLoading, 1000);
+
   try {
     const chips = await deriveLibraryPromptIdeas();
+    clearInterval(ticker);
+    if (chips.length === 0 && documentReadFailed) {
+      // Distinguish "couldn't read the document" (the timeout in
+      // getActiveDocumentText) from "the model had nothing to suggest".
+      container.innerHTML = "";
+      const failEl = document.createElement("p");
+      failEl.className = "doc-suggestions-loading";
+      failEl.textContent =
+        "Couldn't read the document (the read timed out - it may be very large or Word is busy). " +
+        'Click "Prompt ideas" to try again.';
+      container.appendChild(failEl);
+      return;
+    }
     renderDocSuggestions(chips);
   } catch (err) {
+    clearInterval(ticker);
     container.innerHTML = "";
     const errorEl = document.createElement("p");
     errorEl.className = "doc-suggestions-loading";
     errorEl.textContent = `Couldn't get prompt ideas (${err.message}). Click "Prompt ideas" to try again.`;
     container.appendChild(errorEl);
   } finally {
+    clearInterval(ticker);
     promptIdeasLoading = false;
     toggleBtn.disabled = false;
   }
@@ -1421,19 +1504,18 @@ function onServerEvent(evt) {
 
 function onPartUpdated(part) {
   if (part.type === "reasoning") {
-    if (!activeReply.reasoningPartID) {
-      activeReply.reasoningPartID = part.id;
+    // Accumulate EVERY reasoning segment (not just the first) so intermediate
+    // reasoning between tool calls stays visible - see renderThought.
+    if (!activeReply.reasoningParts.has(part.id)) {
+      activeReply.reasoningOrder.push(part.id);
     }
-    if (part.id !== activeReply.reasoningPartID) {
-      return;
-    }
-    activeReply.reasoningText = part.text || "";
+    activeReply.reasoningParts.set(part.id, part.text || "");
     renderThought(activeReply);
-    if (part.time && part.time.end) {
+    if (part.time && part.time.end && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
       finishThought(activeReply, part.time.end - part.time.start);
     }
   } else if (part.type === "text") {
-    if (!activeReply.reasoningPartID && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
+    if (activeReply.reasoningParts.size === 0 && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
       // Some models skip the reasoning phase entirely and go straight to the
       // answer - collapse the "Thinking..." row using wall-clock elapsed time
       // instead of leaving it spinning forever with nothing to finish it.
@@ -1451,11 +1533,11 @@ function onPartUpdated(part) {
 }
 
 function onPartDelta(partID, delta) {
-  if (partID === activeReply.reasoningPartID) {
-    activeReply.reasoningText += delta;
+  if (activeReply.reasoningParts.has(partID)) {
+    activeReply.reasoningParts.set(partID, activeReply.reasoningParts.get(partID) + delta);
     renderThought(activeReply);
   } else if (activeReply.textParts.has(partID)) {
-    if (!activeReply.reasoningPartID && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
+    if (activeReply.reasoningParts.size === 0 && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
       finishThought(activeReply, Date.now() - activeReply.startedAt);
     }
     activeReply.textParts.set(partID, activeReply.textParts.get(partID) + delta);
@@ -1464,15 +1546,78 @@ function onPartDelta(partID, delta) {
   }
 }
 
-function onToolPartUpdated(reply, part) {
-  const status = part.state && part.state.status;
-  if (status === "running" || status === "pending") {
-    const title = (part.state && part.state.title) || part.tool;
-    setActivity(reply, `Running ${title}...`);
+// Prettifies a raw tool id for display, e.g.
+// "word_word_live_toggle_track_changes" -> "toggle track changes",
+// "read" -> "Read". Strips the word-mcp prefixes and turns underscores into
+// spaces so the step list reads like opencode's.
+function friendlyToolName(tool) {
+  if (!tool) {
+    return "tool";
+  }
+  let name = String(tool).replace(/^word_word_live_/, "").replace(/^word_/, "");
+  name = name.replace(/_/g, " ").trim();
+  // Capitalize the common built-in tools (read/glob/bash/write/edit/list/grep).
+  if (/^(read|glob|bash|write|edit|list|grep|webfetch|task)$/i.test(name)) {
+    name = name.charAt(0).toUpperCase() + name.slice(1);
+  }
+  return name || String(tool);
+}
+
+// A short one-line summary of a tool call's arguments. Drops `filename` first -
+// every word-mcp tool carries the open document's name, so it's the same noise
+// on every step and hides the actually-useful args. Then prefers a single
+// salient field (the file/command/pattern/query or the content being written),
+// else a compact JSON of what remains. Returns "" when nothing useful is left.
+function toolArgsSummary(input) {
+  if (!input || typeof input !== "object") {
+    return "";
+  }
+  const filtered = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k === "filename") {
+      continue;
+    }
+    filtered[k] = v;
+  }
+  const salient =
+    filtered.filePath ||
+    filtered.path ||
+    filtered.file ||
+    filtered.command ||
+    filtered.pattern ||
+    filtered.query ||
+    filtered.url ||
+    filtered.heading ||
+    filtered.text ||
+    filtered.new_text ||
+    filtered.search_text ||
+    filtered.content ||
+    filtered.description;
+  let text;
+  if (salient != null && String(salient) !== "") {
+    text = String(salient);
+  } else if (Object.keys(filtered).length === 0) {
+    text = "";
   } else {
-    // Completed or errored - the tool's own effect (e.g. a document edit) is
-    // what shows the result, so just clear the busy line rather than leaving
-    // it stuck between this tool call and whatever the model does next.
+    text = JSON.stringify(filtered);
+  }
+  if (text.length > 100) {
+    text = text.slice(0, 99) + "…";
+  }
+  return text;
+}
+
+// A single, transient "working" line for the tool currently running - it
+// updates as each tool starts and clears once the tool finishes, so the
+// intermediate tool steps aren't listed out persistently (per user
+// preference). Reasoning is still shown above; the answer follows below.
+function onToolPartUpdated(reply, part) {
+  const status = (part.state && part.state.status) || "running";
+  if (status === "running" || status === "pending") {
+    const name = friendlyToolName(part.tool);
+    const args = toolArgsSummary(part.state && part.state.input);
+    setActivity(reply, args ? `${name}: ${args}` : `${name}...`);
+  } else {
     setActivity(reply, null);
   }
 }
@@ -1501,8 +1646,8 @@ async function streamAssistantReply(sid, text, documentContext, selectedText, hi
   const reply = {
     sessionID: sid,
     assistantMessageID: null,
-    reasoningPartID: null,
-    reasoningText: "",
+    reasoningParts: new Map(),
+    reasoningOrder: [],
     textOrder: [],
     textParts: new Map(),
     dom,
@@ -1792,7 +1937,10 @@ function tickThought(reply) {
 
 function renderThought(reply) {
   reply.dom.thoughtDetailEl.classList.add("chat-thought-detail--open");
-  reply.dom.thoughtDetailEl.innerHTML = renderMarkdown(reply.reasoningText);
+  // Concatenate all reasoning segments (in arrival order) so reasoning that
+  // happens between tool calls is shown too, not just the first burst.
+  const combined = reply.reasoningOrder.map((id) => reply.reasoningParts.get(id) || "").join("\n\n");
+  reply.dom.thoughtDetailEl.innerHTML = renderMarkdown(combined);
   scrollChatLog();
 }
 
@@ -1801,7 +1949,10 @@ function finishThought(reply, elapsedMs) {
   const seconds = Math.max(1, Math.round(elapsedMs / 1000));
   reply.dom.thoughtLabelEl.textContent = `Thought for ${seconds}s`;
   reply.dom.thoughtEl.classList.add("chat-thought--done");
-  reply.dom.thoughtDetailEl.classList.remove("chat-thought-detail--open");
+  // Leave the reasoning detail expanded so the intermediate reasoning stays
+  // visible after the turn finishes (the user can still click "Thought for Ns"
+  // to collapse it). If the turn had no reasoning, --open was never added, so
+  // this stays collapsed automatically.
 }
 
 function setActivity(reply, label) {
