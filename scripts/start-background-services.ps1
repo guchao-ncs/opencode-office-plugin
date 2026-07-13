@@ -37,30 +37,28 @@ function Start-OpenCodeServe {
         -RedirectStandardError (Join-Path $logDir "opencode-serve.err.log")
 }
 
-# Reads the live word-MCP connection status off the running server ("connected",
-# "failed", etc.), or $null if serve isn't answering (yet).
-function Get-WordMcpStatus {
+# Reads the live MCP connection status off the running server ("connected",
+# "failed", etc.) for a given server name, or $null if serve isn't answering.
+function Get-McpStatus($name) {
     try {
         $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$opencodePort/mcp" -TimeoutSec 5 -ErrorAction Stop
-        if ($resp.word -and $resp.word.status) { return [string]$resp.word.status }
+        if ($resp.$name -and $resp.$name.status) { return [string]$resp.$name.status }
         return $null
     } catch {
         return $null
     }
 }
 
-# Polls until the word MCP status reaches a settled state (connected/failed) or
-# the timeout elapses - covers both serve still booting (no answer yet) and the
-# MCP handshake still in flight. Returns the last status seen ($null if serve
-# never answered at all).
-function Wait-WordMcpSettled([int]$timeoutSeconds = 120) {
+# Polls until the MCP status reaches a settled state (connected/failed) or
+# the timeout elapses. Returns the last status seen.
+function Wait-McpSettled($name, [int]$timeoutSeconds = 120) {
     $deadline = (Get-Date).AddSeconds($timeoutSeconds)
     do {
-        $status = Get-WordMcpStatus
+        $status = Get-McpStatus $name
         if ($status -eq "connected" -or $status -eq "failed") { return $status }
         Start-Sleep -Seconds 5
     } while ((Get-Date) -lt $deadline)
-    return Get-WordMcpStatus
+    return Get-McpStatus $name
 }
 
 if (Test-PortListening $devServerPort) {
@@ -95,32 +93,43 @@ if (Test-PortListening $opencodePort) {
     Start-OpenCodeServe
 }
 
-# --- Self-heal: make sure the word MCP connection actually came up ---
+# --- Self-heal: make sure the MCP connections actually came up ---
 # Runs on every invocation (not just fresh starts), so an already-running serve
 # whose MCP connection failed at logon gets repaired too.
-$status = Wait-WordMcpSettled
-if ($status -eq "failed") {
-    Write-Host "word MCP connection is in 'failed' state - trying a runtime reconnect..."
-    try {
-        Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$opencodePort/mcp/word/connect" -TimeoutSec 120 -ErrorAction Stop | Out-Null
-    } catch {
-        # Best-effort - the settled re-check below decides what happens next.
+$services = @("word", "excel")
+$failedServices = @()
+
+foreach ($srv in $services) {
+    $status = Wait-McpSettled $srv
+    if ($status -eq "failed") {
+        Write-Host "$srv MCP connection is in 'failed' state - trying a runtime reconnect..."
+        try {
+            Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$opencodePort/mcp/$srv/connect" -TimeoutSec 120 -ErrorAction Stop | Out-Null
+        } catch {
+            # Best-effort
+        }
+        $status = Wait-McpSettled $srv -timeoutSeconds 30
     }
-    $status = Wait-WordMcpSettled -timeoutSeconds 30
+    if ($status -ne "connected") {
+        $failedServices += $srv
+    } else {
+        Write-Host "$srv MCP connection verified: connected"
+    }
 }
-if ($status -eq "failed") {
-    Write-Host "Reconnect did not recover it - restarting opencode serve..."
+
+if ($failedServices.Count -gt 0) {
+    Write-Host "Some MCP services ($failedServices) are still failed - restarting opencode serve..."
     Get-NetTCPConnection -LocalPort $opencodePort -State Listen -ErrorAction SilentlyContinue |
         ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 2
     Start-OpenCodeServe
-    $status = Wait-WordMcpSettled
-}
-
-if ($status -eq "connected") {
-    Write-Host "word MCP connection verified: connected"
-} elseif ($null -eq $status) {
-    Write-Host "warning: could not read MCP status from opencode serve on port $opencodePort - check $logDir\opencode-serve.err.log"
-} else {
-    Write-Host "warning: word MCP connection is still '$status' after reconnect and restart - Word editing tools will be unavailable. Check $logDir\opencode-serve.err.log"
+    
+    foreach ($srv in $services) {
+        $status = Wait-McpSettled $srv
+        if ($status -eq "connected") {
+            Write-Host "$srv MCP connection verified: connected"
+        } else {
+            Write-Host "warning: $srv MCP connection is still '$status' - check $logDir\opencode-serve.err.log"
+        }
+    }
 }

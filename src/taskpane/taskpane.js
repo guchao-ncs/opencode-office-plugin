@@ -3,7 +3,7 @@
  * See LICENSE in the project root for license information.
  */
 
-/* global document, Office */
+/* global document, window, Office, localStorage, setTimeout, clearTimeout, fetch, console, AbortController, URL, navigator, setInterval, clearInterval, EventSource, Excel, Word */
 
 import { marked } from "marked";
 
@@ -121,7 +121,12 @@ let pendingHiddenInstruction = null;
 let isSending = false;
 
 Office.onReady((info) => {
-  if (info.host === Office.HostType.Word || info.host === Office.HostType.PowerPoint) {
+  if (
+    info.host === Office.HostType.Word ||
+    info.host === Office.HostType.PowerPoint ||
+    info.host === Office.HostType.Excel ||
+    info.host === Office.HostType.Outlook
+  ) {
     document.getElementById("sideload-msg").style.display = "none";
     document.getElementById("app-body").style.display = "flex";
     document.getElementById("chat-form").addEventListener("submit", onSubmit);
@@ -174,6 +179,49 @@ Office.onReady((info) => {
     // document" chip panel. Not awaited - it must not delay the taskpane
     // becoming interactive.
     initializeDocumentSuggestions();
+
+    // Listen for contextMenuTrigger from localStorage to auto-submit right-click analyses
+    window.addEventListener("storage", (event) => {
+      if (event.key === "contextMenuTrigger" && event.newValue) {
+        try {
+          const data = JSON.parse(event.newValue);
+          if (data && data.action === "analyze" && data.content) {
+            const input = document.getElementById("chat-input");
+            input.value = `Analyze this selection: "${data.content}"`;
+            onChatInputChanged();
+            localStorage.removeItem("contextMenuTrigger");
+            const form = document.getElementById("chat-form");
+            if (form) {
+              form.requestSubmit();
+            }
+          }
+        } catch (e) {
+          console.error("Failed to parse contextMenuTrigger:", e);
+        }
+      }
+    });
+
+    // Check on startup for any pending context menu analysis trigger
+    const pendingTrigger = localStorage.getItem("contextMenuTrigger");
+    if (pendingTrigger) {
+      try {
+        const data = JSON.parse(pendingTrigger);
+        if (data && data.action === "analyze" && data.content) {
+          setTimeout(() => {
+            const input = document.getElementById("chat-input");
+            input.value = `Analyze this selection: "${data.content}"`;
+            onChatInputChanged();
+            localStorage.removeItem("contextMenuTrigger");
+            const form = document.getElementById("chat-form");
+            if (form) {
+              form.requestSubmit();
+            }
+          }, 500);
+        }
+      } catch (e) {
+        console.error("Failed to parse pending contextMenuTrigger:", e);
+      }
+    }
 
     // Best-effort: close our SSE connection when this taskpane instance goes
     // away (document closed, add-in reloaded, etc). opencode's own /event
@@ -602,7 +650,9 @@ async function ensureSession() {
     docText === null &&
     typeof Office !== "undefined" &&
     Office.context &&
-    Office.context.host === Office.HostType.Word;
+    (Office.context.host === Office.HostType.Word ||
+      Office.context.host === Office.HostType.Excel ||
+      Office.context.host === Office.HostType.Outlook);
   if (docText !== null) {
     const docUrl =
       typeof Office !== "undefined" && Office.context && Office.context.document
@@ -704,32 +754,41 @@ function buildDocumentIdentityBlock(docText) {
   block += `==================================================\n\n`;
 
   block += "CRITICAL BINDING CONTRACT & SAFETY PROTOCOL FOR MUTATIONS:\n";
-  block +=
-    "Before calling any live-editing / mutation tool (such as format_text, add_heading, add_table, search_and_replace, word_live_replace_text, create_custom_style, set_paragraph_spacing, set_table_cell_shading, format_table, etc.):\n\n";
+  if (isExcel()) {
+    block +=
+      "Before calling any Excel live-editing / mutation tool (such as write_cell, etc.):\n\n";
+    block +=
+      "1. Read-only actions (summarizing, reading context) are permitted without restrictions.\n";
+    block +=
+      "2. When editing, target the active worksheet carefully. Ensure you match the context and coordinates.\n";
+  } else {
+    block +=
+      "Before calling any live-editing / mutation tool (such as format_text, add_heading, add_table, search_and_replace, word_live_replace_text, create_custom_style, set_paragraph_spacing, set_table_cell_shading, format_table, etc.):\n\n";
 
-  block +=
-    "1. Read-only actions (summarizing, reading context) are permitted without restrictions.\n";
-  block += "2. For saved documents (Document Type: Saved Document):\n";
-  block += "   - You MUST call `word_live_list_open` first.\n";
-  block +=
-    "   - Match the 'Document URL/Path' or 'Document Name' above to exactly one open document returned by `word_live_list_open`.\n";
-  block +=
-    "   - You MUST pass the matched path or name as the `filename` parameter to all `word_live_*` editing tools. Never pass null or leave `filename` omitted.\n";
-  block +=
-    "   - If no exact match or multiple matches exist, you MUST stop immediately, do not mutate, and ask the user to save or close duplicate files.\n";
-  block += "3. For unsaved documents (Document Type: Unsaved Document):\n";
-  block += "   - Destructive live edits are blocked by default.\n";
-  block += "   - You MUST first call `word_live_list_open` to inspect all open documents.\n";
-  block += "   - If `word_live_list_open` shows exactly one open unsaved document:\n";
-  block +=
-    "     * You may proceed with the edit only after explicitly telling the user: 'I see only one unsaved document open. Please confirm if you want me to edit this document or if you prefer to save it first.'\n";
-  block +=
-    "   - If `word_live_list_open` shows two or more unsaved documents (or you cannot be sure which one is hosting the taskpane):\n";
-  block +=
-    "     * You MUST fail closed and stop immediately. Politely ask the user to save the target document first or close all other unsaved documents so the target can be uniquely identified.\n";
-  block += "4. Mismatch Prevention:\n";
-  block +=
-    "   - Do not perform any mutation if the actual document's content/structure on disk/Word does not correspond to the 'Fresh Text Hash' and preview details above.\n";
+    block +=
+      "1. Read-only actions (summarizing, reading context) are permitted without restrictions.\n";
+    block += "2. For saved documents (Document Type: Saved Document):\n";
+    block += "   - You MUST call `word_live_list_open` first.\n";
+    block +=
+      "   - Match the 'Document URL/Path' or 'Document Name' above to exactly one open document returned by `word_live_list_open`.\n";
+    block +=
+      "   - You MUST pass the matched path or name as the `filename` parameter to all `word_live_*` editing tools. Never pass null or leave `filename` omitted.\n";
+    block +=
+      "   - If no exact match or multiple matches exist, you MUST stop immediately, do not mutate, and ask the user to save or close duplicate files.\n";
+    block += "3. For unsaved documents (Document Type: Unsaved Document):\n";
+    block += "   - Destructive live edits are blocked by default.\n";
+    block += "   - You MUST first call `word_live_list_open` to inspect all open documents.\n";
+    block += "   - If `word_live_list_open` shows exactly one open unsaved document:\n";
+    block +=
+      "     * You may proceed with the edit only after explicitly telling the user: 'I see only one unsaved document open. Please confirm if you want me to edit this document or if you prefer to save it first.'\n";
+    block +=
+      "   - If `word_live_list_open` shows two or more unsaved documents (or you cannot be sure which one is hosting the taskpane):\n";
+    block +=
+      "     * You MUST fail closed and stop immediately. Politely ask the user to save the target document first or close all other unsaved documents so the target can be uniquely identified.\n";
+    block += "4. Mismatch Prevention:\n";
+    block +=
+      "   - Do not perform any mutation if the actual document's content/structure on disk/Word does not correspond to the 'Fresh Text Hash' and preview details above.\n";
+  }
 
   return block;
 }
@@ -760,10 +819,6 @@ function getActiveDocumentText(timeoutMs = 30000) {
       resolve(null);
       return;
     }
-    if (typeof Word === "undefined" || !Word.run) {
-      resolve(null);
-      return;
-    }
     let settled = false;
     const settle = (value) => {
       if (!settled) {
@@ -771,8 +826,166 @@ function getActiveDocumentText(timeoutMs = 30000) {
         resolve(value);
       }
     };
-    // Word.run cannot be cancelled - on timeout we just stop waiting for it.
+    // run functions cannot be cancelled - on timeout we just stop waiting.
     const timer = setTimeout(() => settle(null), timeoutMs);
+
+    if (isOutlook()) {
+      const item = Office.context.mailbox.item;
+      if (!item) {
+        clearTimeout(timer);
+        settle(null);
+        return;
+      }
+      const subject = item.subject || "No Subject";
+      const sender = item.from
+        ? `${item.from.displayName} <${item.from.emailAddress}>`
+        : "Unknown Sender/Self (Compose Mode)";
+      item.body.getAsync(Office.CoercionType.Text, (result) => {
+        clearTimeout(timer);
+        if (result.status === Office.AsyncResultStatus.Succeeded) {
+          const bodyText = result.value || "";
+          let markdown = `### Email Details\n`;
+          markdown += `**Subject**: ${subject}\n`;
+          markdown += `**Sender**: ${sender}\n\n`;
+          markdown += `#### Email Body\n---\n${bodyText}\n---`;
+          settle(markdown);
+        } else {
+          settle(
+            `### Email Details\n**Subject**: ${subject}\n**Sender**: ${sender}\n\nFailed to retrieve email body.`
+          );
+        }
+      });
+      return;
+    }
+
+    if (
+      typeof Office !== "undefined" &&
+      Office.context &&
+      Office.context.host === Office.HostType.Excel
+    ) {
+      if (typeof Excel === "undefined" || !Excel.run) {
+        clearTimeout(timer);
+        settle(null);
+        return;
+      }
+      Excel.run(async (context) => {
+        const sheet = context.workbook.worksheets.getActiveWorksheet();
+        sheet.load("name");
+        await context.sync();
+
+        let range;
+        try {
+          range = sheet.getUsedRange();
+          range.load([
+            "values",
+            "formulas",
+            "address",
+            "rowCount",
+            "columnCount",
+            "rowIndex",
+            "columnIndex",
+          ]);
+          await context.sync();
+        } catch {
+          clearTimeout(timer);
+          settle(
+            `### Excel Worksheet Summary\n**Active Sheet**: ${sheet.name}\n\nThe worksheet is empty.`
+          );
+          return;
+        }
+
+        const values = range.values;
+        const formulas = range.formulas;
+        const rowCount = range.rowCount;
+        const colCount = range.columnCount;
+        const startRow = range.rowIndex;
+        const startCol = range.columnIndex;
+
+        let markdown = `### Excel Worksheet Summary\n`;
+        markdown += `**Active Sheet**: ${sheet.name}\n`;
+        markdown += `**Used Range**: ${range.address} (${rowCount} rows x ${colCount} columns)\n\n`;
+
+        const errorCells = [];
+        const formulaCells = [];
+        const errorList = ["#REF!", "#DIV/0!", "#N/A", "#VALUE!", "#NUM!", "#NAME?", "#NULL!"];
+
+        for (let r = 0; r < rowCount; r++) {
+          for (let c = 0; c < colCount; c++) {
+            const val = values[r][c];
+            const formula = formulas[r][c];
+            const cellLabel = getColumnLabel(startCol + c) + (startRow + r + 1);
+
+            let isError = false;
+            if (typeof val === "string") {
+              const upperVal = val.toUpperCase();
+              if (errorList.some((err) => upperVal.includes(err))) {
+                isError = true;
+              }
+            }
+
+            if (isError) {
+              errorCells.push({ cell: cellLabel, value: val, formula: formula });
+            } else if (formula && formula !== val && String(formula).startsWith("=")) {
+              formulaCells.push({ cell: cellLabel, value: val, formula: formula });
+            }
+          }
+        }
+
+        markdown += `#### Data Grid\n`;
+        let headerRow = `| |`;
+        let separatorRow = `|---|`;
+        for (let c = 0; c < colCount; c++) {
+          headerRow += ` ${getColumnLabel(startCol + c)} |`;
+          separatorRow += `---|`;
+        }
+        markdown += headerRow + `\n` + separatorRow + `\n`;
+
+        for (let r = 0; r < rowCount; r++) {
+          let rowStr = `| **${startRow + r + 1}** |`;
+          for (let c = 0; c < colCount; c++) {
+            let cellVal = values[r][c];
+            if (cellVal === null || cellVal === undefined) {
+              cellVal = "";
+            }
+            cellVal = String(cellVal).replace(/\|/g, "\\|");
+            rowStr += ` ${cellVal} |`;
+          }
+          markdown += rowStr + `\n`;
+        }
+        markdown += `\n`;
+
+        if (formulaCells.length > 0) {
+          markdown += `#### Formulas\n`;
+          formulaCells.forEach((f) => {
+            markdown += `- **${f.cell}**: \`${f.formula}\` (Value: \`${f.value}\`)\n`;
+          });
+          markdown += `\n`;
+        }
+
+        if (errorCells.length > 0) {
+          markdown += `#### ⚠️ Formula Errors\n`;
+          errorCells.forEach((err) => {
+            markdown += `- **${err.cell}**: \`${err.value}\` (Formula: \`${err.formula}\`)\n`;
+          });
+          markdown += `\n`;
+        } else {
+          markdown += `No formula errors detected.\n`;
+        }
+
+        clearTimeout(timer);
+        settle(markdown);
+      }).catch((err) => {
+        clearTimeout(timer);
+        settle(`Failed to read active worksheet: ${err.message}`);
+      });
+      return;
+    }
+
+    if (typeof Word === "undefined" || !Word.run) {
+      clearTimeout(timer);
+      settle(null);
+      return;
+    }
     Word.run(async (context) => {
       const body = context.document.body;
       body.load("text");
@@ -797,6 +1010,20 @@ function getActiveDocumentText(timeoutMs = 30000) {
 // "nothing selected" apart from "selected text happens to be empty".
 function getSelectedText() {
   return new Promise((resolve) => {
+    if (isOutlook()) {
+      if (Office.context.mailbox.item) {
+        Office.context.mailbox.item.getSelectedDataAsync(Office.CoercionType.Text, (result) => {
+          if (result.status === Office.AsyncResultStatus.Succeeded) {
+            resolve(result.value && result.value.trim() ? result.value : null);
+          } else {
+            resolve(null);
+          }
+        });
+      } else {
+        resolve(null);
+      }
+      return;
+    }
     if (
       typeof Office !== "undefined" &&
       Office.context &&
@@ -810,6 +1037,52 @@ function getSelectedText() {
           resolve(null);
         }
       });
+      return;
+    }
+    if (
+      typeof Office !== "undefined" &&
+      Office.context &&
+      Office.context.host === Office.HostType.Excel
+    ) {
+      if (typeof Excel === "undefined" || !Excel.run) {
+        resolve(null);
+        return;
+      }
+      Excel.run(async (context) => {
+        const range = context.workbook.getSelectedRange();
+        range.load([
+          "values",
+          "formulas",
+          "address",
+          "rowCount",
+          "columnCount",
+          "rowIndex",
+          "columnIndex",
+        ]);
+        await context.sync();
+
+        const values = range.values;
+        const formulas = range.formulas;
+        const rowCount = range.rowCount;
+        const colCount = range.columnCount;
+        const startRow = range.rowIndex;
+        const startCol = range.columnIndex;
+
+        let formatted = `Selected Range: ${range.address}\n`;
+        for (let r = 0; r < rowCount; r++) {
+          for (let c = 0; c < colCount; c++) {
+            const cellLabel = getColumnLabel(startCol + c) + (startRow + r + 1);
+            const val = values[r][c];
+            const formula = formulas[r][c];
+            if (formula && formula !== val && String(formula).startsWith("=")) {
+              formatted += `${cellLabel}: ${val} (Formula: ${formula})\n`;
+            } else {
+              formatted += `${cellLabel}: ${val}\n`;
+            }
+          }
+        }
+        resolve(formatted.trim() ? formatted.trim() : null);
+      }).catch(() => resolve(null));
       return;
     }
     if (typeof Word === "undefined" || !Word.run) {
@@ -915,7 +1188,26 @@ function customizationHiddenBlock(customization) {
   return parts.join("\n\n");
 }
 
-const isPPT = () => typeof Office !== "undefined" && Office.context && Office.context.host === Office.HostType.PowerPoint;
+const isPPT = () =>
+  typeof Office !== "undefined" &&
+  Office.context &&
+  Office.context.host === Office.HostType.PowerPoint;
+const isExcel = () =>
+  typeof Office !== "undefined" && Office.context && Office.context.host === Office.HostType.Excel;
+const isOutlook = () =>
+  typeof Office !== "undefined" &&
+  Office.context &&
+  Office.context.host === Office.HostType.Outlook;
+
+function getColumnLabel(index) {
+  let label = "";
+  let temp = index;
+  while (temp >= 0) {
+    label = String.fromCharCode((temp % 26) + 65) + label;
+    temp = Math.floor(temp / 26) - 1;
+  }
+  return label;
+}
 
 // Shared by buildPromptParts and buildPromptIdeasParts so the "here is the
 // whole document" framing (and its file-agnostic "the document" phrasing) is
@@ -926,6 +1218,26 @@ function documentContextHiddenBlock(documentContext) {
       "Context: the user currently has a PowerPoint presentation open in this session. Its full text is included below - " +
       'use it automatically whenever the user refers to "the presentation"/"this presentation"/"the document" without naming a file, ' +
       "instead of asking which presentation they mean.\n\n" +
+      "--- BEGIN CURRENT DOCUMENT CONTENT ---\n" +
+      documentContext +
+      "\n--- END CURRENT DOCUMENT CONTENT ---"
+    );
+  }
+  if (isExcel()) {
+    return (
+      "Context: the user currently has an Excel workbook open in this session. A summary of its active sheet, formulas, and formula errors is included below - " +
+      'use it automatically whenever the user refers to "the sheet"/"the workbook"/"the spreadsheet"/"this document" without naming a file, ' +
+      "instead of asking which workbook they mean.\n\n" +
+      "--- BEGIN CURRENT DOCUMENT CONTENT ---\n" +
+      documentContext +
+      "\n--- END CURRENT DOCUMENT CONTENT ---"
+    );
+  }
+  if (isOutlook()) {
+    return (
+      "Context: the user currently has an Outlook email open in this session. Its details and full text are included below - " +
+      'use it automatically whenever the user refers to "the email"/"the message"/"the mail"/"the document" without naming a file, ' +
+      "instead of asking which email they mean.\n\n" +
       "--- BEGIN CURRENT DOCUMENT CONTENT ---\n" +
       documentContext +
       "\n--- END CURRENT DOCUMENT CONTENT ---"
@@ -949,6 +1261,9 @@ const TRACK_CHANGES_INSTRUCTION = () => {
   if (isPPT()) {
     return "Standing rule: before making any actual edit to the PowerPoint presentation (inserting, modifying shapes/slides), plan the operations carefully.";
   }
+  if (isExcel()) {
+    return "Standing rule: before making any actual edit to the Excel workbook (updating cell values or formulas), plan the operations carefully.";
+  }
   return (
     "Standing rule: before making any actual edit to the Word document (inserting, replacing, deleting, or " +
     'reformatting text), first ensure Word\'s Track Changes ("Revision") mode is turned on - call the live ' +
@@ -971,6 +1286,12 @@ const FORMATTING_INSTRUCTION = () => {
       "and match it, so the new content blends in seamlessly."
     );
   }
+  if (isExcel()) {
+    return (
+      "Standing rule: when updating values or formulas in the Excel workbook, write clean values or formulas - " +
+      "never write markdown syntax into the cells as literal text unless explicitly asked. Before updating, make sure formulas are syntactically valid Excel formulas starting with '='."
+    );
+  }
   return (
     "Standing rule: when inserting or editing content in the Word document, produce native Word formatting - " +
     "never write markdown syntax into the document as literal text (no pipe-delimited '|' table rows, no #/##" +
@@ -979,6 +1300,16 @@ const FORMATTING_INSTRUCTION = () => {
     "via Word's own list formatting. Before inserting, read the formatting of the surrounding existing content " +
     "(font family, font size, styles) and match it, so the new content blends in seamlessly with the rest of " +
     "the document."
+  );
+};
+
+const OUTLOOK_INSTRUCTION = () => {
+  if (!isOutlook()) return "";
+  return (
+    "Standing rule for Outlook: The user is interacting with you from their email client. If the user asks you to " +
+    "write a reply, draft an email, or insert/update content in the email body, formulate the response clearly. " +
+    "Advise them that they can use the 'Insert into email' (✍) button in the chat panel UI to insert your response " +
+    "directly into their compose window."
   );
 };
 
@@ -1012,6 +1343,9 @@ function buildPromptParts(text, documentContext, selectedText, hiddenInstruction
   }
   if (hiddenInstruction) {
     hidden.push(hiddenInstruction);
+  }
+  if (isOutlook()) {
+    hidden.push(OUTLOOK_INSTRUCTION());
   }
   hidden.push(TRACK_CHANGES_INSTRUCTION());
   hidden.push(FORMATTING_INSTRUCTION());
@@ -2048,10 +2382,16 @@ function appendStreamingAssistantMessage() {
   const actionsEl = document.createElement("div");
   actionsEl.className = "chat-actions";
   actionsEl.style.display = "none";
-  actionsEl.innerHTML =
-    '<button type="button" class="chat-action-btn chat-action-copy" title="Copy">⧉</button>' +
+  let actionsHtml =
+    '<button type="button" class="chat-action-btn chat-action-copy" title="Copy">⧉</button>';
+  if (isOutlook()) {
+    actionsHtml +=
+      '<button type="button" class="chat-action-btn chat-action-insert" title="Insert into email">✍</button>';
+  }
+  actionsHtml +=
     '<button type="button" class="chat-action-btn chat-action-up" title="Good response" aria-pressed="false">👍</button>' +
     '<button type="button" class="chat-action-btn chat-action-down" title="Bad response" aria-pressed="false">👎</button>';
+  actionsEl.innerHTML = actionsHtml;
 
   const suggestionsEl = document.createElement("div");
   suggestionsEl.className = "chat-suggestions";
@@ -2074,6 +2414,20 @@ function appendStreamingAssistantMessage() {
   };
 }
 
+function writeReplyToEmail(text) {
+  if (isOutlook() && Office.context.mailbox.item && Office.context.mailbox.item.body) {
+    Office.context.mailbox.item.body.setSelectedDataAsync(
+      text,
+      { coercionType: Office.CoercionType.Text },
+      (result) => {
+        if (result.status !== Office.AsyncResultStatus.Succeeded) {
+          console.error("Failed to insert reply text:", result.error);
+        }
+      }
+    );
+  }
+}
+
 // Reveals the Copy/👍/👎 row under a finished reply and wires it up. Feedback
 // is local-only (no telemetry backend exists for this single-user tool) - the
 // thumbs buttons just reflect the user's own click back as a toggle.
@@ -2082,6 +2436,7 @@ function wireMessageActions(dom, text) {
   const copyBtn = dom.actionsEl.querySelector(".chat-action-copy");
   const upBtn = dom.actionsEl.querySelector(".chat-action-up");
   const downBtn = dom.actionsEl.querySelector(".chat-action-down");
+  const insertBtn = dom.actionsEl.querySelector(".chat-action-insert");
 
   copyBtn.addEventListener("click", async () => {
     try {
@@ -2092,6 +2447,14 @@ function wireMessageActions(dom, text) {
       // Clipboard permission can be denied by the host - nothing to fall back to.
     }
   });
+
+  if (insertBtn) {
+    insertBtn.addEventListener("click", () => {
+      writeReplyToEmail(text);
+      insertBtn.textContent = "✓";
+      setTimeout(() => (insertBtn.textContent = "✍"), 1200);
+    });
+  }
 
   const togglePressed = (btn, other) => {
     const pressed = btn.getAttribute("aria-pressed") === "true";

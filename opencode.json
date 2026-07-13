@@ -24,6 +24,12 @@
         "MCP_AUTHOR_INITIALS": "GC",
         "PPT_AUTO_DISMISS_DIALOG": "true"
       }
+    },
+    "excel": {
+      "type": "local",
+      "command": ["uv", "run", "scripts/excel_mcp_server.py"],
+      "enabled": true,
+      "timeout": 90000
     }
   }
 }
