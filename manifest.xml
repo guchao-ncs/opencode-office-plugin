@@ -9,8 +9,8 @@
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="AI Assistant"/>
   <Description DefaultValue="Local AI document assistant for Word, powered by OpenCode."/>
-  <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png"/>
-  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-64.png"/>
+  <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png?v=2"/>
+  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-64.png?v=2"/>
   <SupportUrl DefaultValue="https://localhost:3000"/>
   <Hosts>
     <Host Name="Document"/>
@@ -62,9 +62,9 @@
     </Hosts>
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/icon-16.png"/>
-        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/icon-32.png"/>
-        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/icon-80.png"/>
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/icon-16.png?v=2"/>
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/icon-32.png?v=2"/>
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/icon-80.png?v=2"/>
       </bt:Images>
       <bt:Urls>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://go.microsoft.com/fwlink/?LinkId=276812" />
