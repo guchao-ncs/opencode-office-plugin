@@ -209,8 +209,7 @@ async function applyHarnessMode() {
   const banner = document.getElementById("harness-banner");
   banner.textContent =
     `Harness mode — identity, user context and conventions come from ${harnessRoot}\\_agentic ` +
-    `(AGENTS.md / SOUL.md / USER.md). Use "Save to memory" (next to "Prompt ideas") to write this ` +
-    `conversation's key points back to the vault.`;
+    `(AGENTS.md / SOUL.md / USER.md).`;
   banner.style.display = "block";
 
   // Reveal the "Save to memory" pill in the toolbar beside "Prompt ideas".
@@ -1316,19 +1315,18 @@ function onServerEvent(evt) {
 
 function onPartUpdated(part) {
   if (part.type === "reasoning") {
-    if (!activeReply.reasoningPartID) {
-      activeReply.reasoningPartID = part.id;
+    // Accumulate EVERY reasoning segment (not just the first) so intermediate
+    // reasoning between tool calls stays visible - see renderThought.
+    if (!activeReply.reasoningParts.has(part.id)) {
+      activeReply.reasoningOrder.push(part.id);
     }
-    if (part.id !== activeReply.reasoningPartID) {
-      return;
-    }
-    activeReply.reasoningText = part.text || "";
+    activeReply.reasoningParts.set(part.id, part.text || "");
     renderThought(activeReply);
-    if (part.time && part.time.end) {
+    if (part.time && part.time.end && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
       finishThought(activeReply, part.time.end - part.time.start);
     }
   } else if (part.type === "text") {
-    if (!activeReply.reasoningPartID && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
+    if (activeReply.reasoningParts.size === 0 && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
       // Some models skip the reasoning phase entirely and go straight to the
       // answer - collapse the "Thinking..." row using wall-clock elapsed time
       // instead of leaving it spinning forever with nothing to finish it.
@@ -1346,11 +1344,11 @@ function onPartUpdated(part) {
 }
 
 function onPartDelta(partID, delta) {
-  if (partID === activeReply.reasoningPartID) {
-    activeReply.reasoningText += delta;
+  if (activeReply.reasoningParts.has(partID)) {
+    activeReply.reasoningParts.set(partID, activeReply.reasoningParts.get(partID) + delta);
     renderThought(activeReply);
   } else if (activeReply.textParts.has(partID)) {
-    if (!activeReply.reasoningPartID && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
+    if (activeReply.reasoningParts.size === 0 && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
       finishThought(activeReply, Date.now() - activeReply.startedAt);
     }
     activeReply.textParts.set(partID, activeReply.textParts.get(partID) + delta);
@@ -1359,15 +1357,78 @@ function onPartDelta(partID, delta) {
   }
 }
 
-function onToolPartUpdated(reply, part) {
-  const status = part.state && part.state.status;
-  if (status === "running" || status === "pending") {
-    const title = (part.state && part.state.title) || part.tool;
-    setActivity(reply, `Running ${title}...`);
+// Prettifies a raw tool id for display, e.g.
+// "word_word_live_toggle_track_changes" -> "toggle track changes",
+// "read" -> "Read". Strips the word-mcp prefixes and turns underscores into
+// spaces so the step list reads like opencode's.
+function friendlyToolName(tool) {
+  if (!tool) {
+    return "tool";
+  }
+  let name = String(tool).replace(/^word_word_live_/, "").replace(/^word_/, "");
+  name = name.replace(/_/g, " ").trim();
+  // Capitalize the common built-in tools (read/glob/bash/write/edit/list/grep).
+  if (/^(read|glob|bash|write|edit|list|grep|webfetch|task)$/i.test(name)) {
+    name = name.charAt(0).toUpperCase() + name.slice(1);
+  }
+  return name || String(tool);
+}
+
+// A short one-line summary of a tool call's arguments. Drops `filename` first -
+// every word-mcp tool carries the open document's name, so it's the same noise
+// on every step and hides the actually-useful args. Then prefers a single
+// salient field (the file/command/pattern/query or the content being written),
+// else a compact JSON of what remains. Returns "" when nothing useful is left.
+function toolArgsSummary(input) {
+  if (!input || typeof input !== "object") {
+    return "";
+  }
+  const filtered = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k === "filename") {
+      continue;
+    }
+    filtered[k] = v;
+  }
+  const salient =
+    filtered.filePath ||
+    filtered.path ||
+    filtered.file ||
+    filtered.command ||
+    filtered.pattern ||
+    filtered.query ||
+    filtered.url ||
+    filtered.heading ||
+    filtered.text ||
+    filtered.new_text ||
+    filtered.search_text ||
+    filtered.content ||
+    filtered.description;
+  let text;
+  if (salient != null && String(salient) !== "") {
+    text = String(salient);
+  } else if (Object.keys(filtered).length === 0) {
+    text = "";
   } else {
-    // Completed or errored - the tool's own effect (e.g. a document edit) is
-    // what shows the result, so just clear the busy line rather than leaving
-    // it stuck between this tool call and whatever the model does next.
+    text = JSON.stringify(filtered);
+  }
+  if (text.length > 100) {
+    text = text.slice(0, 99) + "…";
+  }
+  return text;
+}
+
+// A single, transient "working" line for the tool currently running - it
+// updates as each tool starts and clears once the tool finishes, so the
+// intermediate tool steps aren't listed out persistently (per user
+// preference). Reasoning is still shown above; the answer follows below.
+function onToolPartUpdated(reply, part) {
+  const status = (part.state && part.state.status) || "running";
+  if (status === "running" || status === "pending") {
+    const name = friendlyToolName(part.tool);
+    const args = toolArgsSummary(part.state && part.state.input);
+    setActivity(reply, args ? `${name}: ${args}` : `${name}...`);
+  } else {
     setActivity(reply, null);
   }
 }
@@ -1396,8 +1457,8 @@ async function streamAssistantReply(sid, text, documentContext, selectedText, hi
   const reply = {
     sessionID: sid,
     assistantMessageID: null,
-    reasoningPartID: null,
-    reasoningText: "",
+    reasoningParts: new Map(),
+    reasoningOrder: [],
     textOrder: [],
     textParts: new Map(),
     dom,
@@ -1687,7 +1748,10 @@ function tickThought(reply) {
 
 function renderThought(reply) {
   reply.dom.thoughtDetailEl.classList.add("chat-thought-detail--open");
-  reply.dom.thoughtDetailEl.innerHTML = renderMarkdown(reply.reasoningText);
+  // Concatenate all reasoning segments (in arrival order) so reasoning that
+  // happens between tool calls is shown too, not just the first burst.
+  const combined = reply.reasoningOrder.map((id) => reply.reasoningParts.get(id) || "").join("\n\n");
+  reply.dom.thoughtDetailEl.innerHTML = renderMarkdown(combined);
   scrollChatLog();
 }
 
@@ -1696,7 +1760,10 @@ function finishThought(reply, elapsedMs) {
   const seconds = Math.max(1, Math.round(elapsedMs / 1000));
   reply.dom.thoughtLabelEl.textContent = `Thought for ${seconds}s`;
   reply.dom.thoughtEl.classList.add("chat-thought--done");
-  reply.dom.thoughtDetailEl.classList.remove("chat-thought-detail--open");
+  // Leave the reasoning detail expanded so the intermediate reasoning stays
+  // visible after the turn finishes (the user can still click "Thought for Ns"
+  // to collapse it). If the turn had no reasoning, --open was never added, so
+  // this stays collapsed automatically.
 }
 
 function setActivity(reply, label) {
