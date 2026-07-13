@@ -121,7 +121,7 @@ let pendingHiddenInstruction = null;
 let isSending = false;
 
 Office.onReady((info) => {
-  if (info.host === Office.HostType.Word) {
+  if (info.host === Office.HostType.Word || info.host === Office.HostType.PowerPoint) {
     document.getElementById("sideload-msg").style.display = "none";
     document.getElementById("app-body").style.display = "flex";
     document.getElementById("chat-form").addEventListener("submit", onSubmit);
@@ -130,8 +130,12 @@ Office.onReady((info) => {
     document.getElementById("settings-toggle").addEventListener("click", onSettingsToggle);
     document.getElementById("settings-save").addEventListener("click", onSettingsSave);
     document.getElementById("settings-clear").addEventListener("click", onSettingsClear);
-    document.getElementById("tab-btn-settings").addEventListener("click", () => onTabSwitch("settings"));
-    document.getElementById("tab-btn-library").addEventListener("click", () => onTabSwitch("library"));
+    document
+      .getElementById("tab-btn-settings")
+      .addEventListener("click", () => onTabSwitch("settings"));
+    document
+      .getElementById("tab-btn-library")
+      .addEventListener("click", () => onTabSwitch("library"));
     document.getElementById("library-add").addEventListener("click", onLibraryAdd);
     document.getElementById("library-save").addEventListener("click", onLibrarySave);
     document.getElementById("library-reset").addEventListener("click", onLibraryReset);
@@ -140,8 +144,10 @@ Office.onReady((info) => {
 
     // Tags this document so Word auto-shows the taskpane the next time this same
     // file is reopened, instead of requiring a manual ribbon-button click every time.
-    Office.context.document.settings.set("Office.AutoShowTaskpaneWithDocument", true);
-    Office.context.document.settings.saveAsync();
+    if (info.host === Office.HostType.Word) {
+      Office.context.document.settings.set("Office.AutoShowTaskpaneWithDocument", true);
+      Office.context.document.settings.saveAsync();
+    }
 
     // One-time migration of the pre-rework harness-root setting, then re-fill
     // the Settings fields from what the user saved last time. The fields only
@@ -150,7 +156,8 @@ Office.onReady((info) => {
     migrateLegacyHarnessSetting();
     document.getElementById("system-instruction-input").value =
       localStorage.getItem(SYSTEM_INSTRUCTION_STORAGE_KEY) || "";
-    document.getElementById("persona-input").value = localStorage.getItem(PERSONA_STORAGE_KEY) || "";
+    document.getElementById("persona-input").value =
+      localStorage.getItem(PERSONA_STORAGE_KEY) || "";
 
     // Ask the static server whether a harness vault was detected on this
     // machine, and switch the Settings tab to harness mode if so. Best-effort:
@@ -263,7 +270,11 @@ async function onSaveToMemory() {
   btn.disabled = true;
   label.textContent = "Saving...";
   try {
-    await sendToOpenCodeBlocking(sessionId, [{ type: "text", text: buildSaveToMemoryInstruction() }], 150000);
+    await sendToOpenCodeBlocking(
+      sessionId,
+      [{ type: "text", text: buildSaveToMemoryInstruction() }],
+      150000
+    );
     restore("Saved ✓");
   } catch {
     restore("Save failed");
@@ -559,7 +570,14 @@ async function onSubmit(event) {
     // valid for the rest of the conversation the way the document's content
     // (mostly) does.
     const selectedText = await getSelectedText();
-    await streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction, customization);
+    await streamAssistantReply(
+      sid,
+      text,
+      documentContext,
+      selectedText,
+      hiddenInstruction,
+      customization
+    );
   } catch (err) {
     appendMessage(
       "error",
@@ -580,7 +598,11 @@ async function ensureSession() {
   // transient read hiccup into a lost conversation. On failure we keep the last
   // known-good identity instead and let the caller surface the problem.
   const docText = await getActiveDocumentText();
-  documentReadFailed = docText === null && typeof Word !== "undefined" && !!Word.run;
+  documentReadFailed =
+    docText === null &&
+    typeof Office !== "undefined" &&
+    Office.context &&
+    Office.context.host === Office.HostType.Word;
   if (docText !== null) {
     const docUrl =
       typeof Office !== "undefined" && Office.context && Office.context.document
@@ -618,7 +640,7 @@ function computeTextHash(text) {
   let hash = 0;
   for (let i = 0; i < text.length; i++) {
     const chr = text.charCodeAt(i);
-    hash = ((hash << 5) - hash) + chr;
+    hash = (hash << 5) - hash + chr;
     hash |= 0;
   }
   return "h-" + hash.toString(36);
@@ -636,7 +658,10 @@ function getOrGenerateSessionNonce(isUnsaved) {
 }
 
 function getDocumentIdentity() {
-  const url = (typeof Office !== "undefined" && Office.context && Office.context.document) ? Office.context.document.url : null;
+  const url =
+    typeof Office !== "undefined" && Office.context && Office.context.document
+      ? Office.context.document.url
+      : null;
   const isUnsaved = !url;
   const nonce = getOrGenerateSessionNonce(isUnsaved);
   let displayName = "Unsaved Document";
@@ -652,7 +677,7 @@ function getDocumentIdentity() {
     url: url || null,
     isUnsaved,
     nonce,
-    displayName
+    displayName,
   };
 }
 
@@ -679,23 +704,32 @@ function buildDocumentIdentityBlock(docText) {
   block += `==================================================\n\n`;
 
   block += "CRITICAL BINDING CONTRACT & SAFETY PROTOCOL FOR MUTATIONS:\n";
-  block += "Before calling any live-editing / mutation tool (such as format_text, add_heading, add_table, search_and_replace, word_live_replace_text, create_custom_style, set_paragraph_spacing, set_table_cell_shading, format_table, etc.):\n\n";
+  block +=
+    "Before calling any live-editing / mutation tool (such as format_text, add_heading, add_table, search_and_replace, word_live_replace_text, create_custom_style, set_paragraph_spacing, set_table_cell_shading, format_table, etc.):\n\n";
 
-  block += "1. Read-only actions (summarizing, reading context) are permitted without restrictions.\n";
+  block +=
+    "1. Read-only actions (summarizing, reading context) are permitted without restrictions.\n";
   block += "2. For saved documents (Document Type: Saved Document):\n";
   block += "   - You MUST call `word_live_list_open` first.\n";
-  block += "   - Match the 'Document URL/Path' or 'Document Name' above to exactly one open document returned by `word_live_list_open`.\n";
-  block += "   - You MUST pass the matched path or name as the `filename` parameter to all `word_live_*` editing tools. Never pass null or leave `filename` omitted.\n";
-  block += "   - If no exact match or multiple matches exist, you MUST stop immediately, do not mutate, and ask the user to save or close duplicate files.\n";
+  block +=
+    "   - Match the 'Document URL/Path' or 'Document Name' above to exactly one open document returned by `word_live_list_open`.\n";
+  block +=
+    "   - You MUST pass the matched path or name as the `filename` parameter to all `word_live_*` editing tools. Never pass null or leave `filename` omitted.\n";
+  block +=
+    "   - If no exact match or multiple matches exist, you MUST stop immediately, do not mutate, and ask the user to save or close duplicate files.\n";
   block += "3. For unsaved documents (Document Type: Unsaved Document):\n";
   block += "   - Destructive live edits are blocked by default.\n";
   block += "   - You MUST first call `word_live_list_open` to inspect all open documents.\n";
   block += "   - If `word_live_list_open` shows exactly one open unsaved document:\n";
-  block += "     * You may proceed with the edit only after explicitly telling the user: 'I see only one unsaved document open. Please confirm if you want me to edit this document or if you prefer to save it first.'\n";
-  block += "   - If `word_live_list_open` shows two or more unsaved documents (or you cannot be sure which one is hosting the taskpane):\n";
-  block += "     * You MUST fail closed and stop immediately. Politely ask the user to save the target document first or close all other unsaved documents so the target can be uniquely identified.\n";
+  block +=
+    "     * You may proceed with the edit only after explicitly telling the user: 'I see only one unsaved document open. Please confirm if you want me to edit this document or if you prefer to save it first.'\n";
+  block +=
+    "   - If `word_live_list_open` shows two or more unsaved documents (or you cannot be sure which one is hosting the taskpane):\n";
+  block +=
+    "     * You MUST fail closed and stop immediately. Politely ask the user to save the target document first or close all other unsaved documents so the target can be uniquely identified.\n";
   block += "4. Mismatch Prevention:\n";
-  block += "   - Do not perform any mutation if the actual document's content/structure on disk/Word does not correspond to the 'Fresh Text Hash' and preview details above.\n";
+  block +=
+    "   - Do not perform any mutation if the actual document's content/structure on disk/Word does not correspond to the 'Fresh Text Hash' and preview details above.\n";
 
   return block;
 }
@@ -717,6 +751,15 @@ function buildDocumentIdentityBlock(docText) {
 // stall, never on a merely-large document.
 function getActiveDocumentText(timeoutMs = 30000) {
   return new Promise((resolve) => {
+    if (
+      typeof Office !== "undefined" &&
+      Office.context &&
+      Office.context.host === Office.HostType.PowerPoint
+    ) {
+      console.log("Delegating full presentation text retrieval to the PowerPoint COM MCP server.");
+      resolve(null);
+      return;
+    }
     if (typeof Word === "undefined" || !Word.run) {
       resolve(null);
       return;
@@ -754,6 +797,21 @@ function getActiveDocumentText(timeoutMs = 30000) {
 // "nothing selected" apart from "selected text happens to be empty".
 function getSelectedText() {
   return new Promise((resolve) => {
+    if (
+      typeof Office !== "undefined" &&
+      Office.context &&
+      Office.context.host === Office.HostType.PowerPoint
+    ) {
+      Office.context.document.getSelectedDataAsync(Office.CoercionType.Text, (result) => {
+        if (result.status === Office.AsyncResultStatus.Succeeded) {
+          const val = result.value;
+          resolve(val && val.trim() ? val : null);
+        } else {
+          resolve(null);
+        }
+      });
+      return;
+    }
     if (typeof Word === "undefined" || !Word.run) {
       resolve(null);
       return;
@@ -807,15 +865,24 @@ function harnessHiddenBlock(root) {
     root +
     "\n\nBefore handling the user's request below, read these files with your file tools and adopt the identity, " +
     "user context, and working conventions they define, for this entire conversation:\n" +
-    "- " + root + "\\_agentic\\os\\SOUL.md  (who you are)\n" +
-    "- " + root + "\\_agentic\\os\\USER.md  (who you're helping)\n" +
-    "- " + root + "\\_agentic\\os\\AGENTS.md  (operating conventions)\n" +
-    "For continuity, also read today's and yesterday's " + root + "\\_agentic\\os\\memory\\YYYY-MM-DD.md and " +
-    root + "\\_agentic\\os\\MEMORY.md IF they exist (skip silently if they don't).\n\n" +
+    "- " +
+    root +
+    "\\_agentic\\os\\SOUL.md  (who you are)\n" +
+    "- " +
+    root +
+    "\\_agentic\\os\\USER.md  (who you're helping)\n" +
+    "- " +
+    root +
+    "\\_agentic\\os\\AGENTS.md  (operating conventions)\n" +
+    "For continuity, also read today's and yesterday's " +
+    root +
+    "\\_agentic\\os\\memory\\YYYY-MM-DD.md and " +
+    root +
+    "\\_agentic\\os\\MEMORY.md IF they exist (skip silently if they don't).\n\n" +
     "Hard boundaries for this Word add-in context: do NOT run any maintenance scripts, the memory-maintenance " +
     "checkpoint, memory-graph, or graphify - even if AGENTS.md tells you to; those are handled elsewhere. Do NOT " +
     "modify any file in the harness unless the user explicitly asks (memory writes happen only via the add-in's " +
-    "\"Save to memory\" button). Keep the persona's concise, structured style."
+    '"Save to memory" button). Keep the persona\'s concise, structured style.'
   );
 }
 
@@ -829,10 +896,13 @@ function customizationHiddenBlock(customization) {
   if (customization.harnessRoot) {
     return harnessHiddenBlock(customization.harnessRoot);
   }
-  const parts = ["The user has configured standing settings for this assistant in the add-in's Settings panel."];
+  const parts = [
+    "The user has configured standing settings for this assistant in the add-in's Settings panel.",
+  ];
   if (customization.persona) {
     parts.push(
-      "PERSONA - adopt this identity, expertise, and tone for the entire conversation:\n" + customization.persona
+      "PERSONA - adopt this identity, expertise, and tone for the entire conversation:\n" +
+        customization.persona
     );
   }
   if (customization.systemInstruction) {
@@ -845,12 +915,24 @@ function customizationHiddenBlock(customization) {
   return parts.join("\n\n");
 }
 
+const isPPT = () => typeof Office !== "undefined" && Office.context && Office.context.host === Office.HostType.PowerPoint;
+
 // Shared by buildPromptParts and buildPromptIdeasParts so the "here is the
 // whole document" framing (and its file-agnostic "the document" phrasing) is
 // worded identically regardless of which hidden message it rides along with.
 function documentContextHiddenBlock(documentContext) {
+  if (isPPT()) {
+    return (
+      "Context: the user currently has a PowerPoint presentation open in this session. Its full text is included below - " +
+      'use it automatically whenever the user refers to "the presentation"/"this presentation"/"the document" without naming a file, ' +
+      "instead of asking which presentation they mean.\n\n" +
+      "--- BEGIN CURRENT DOCUMENT CONTENT ---\n" +
+      documentContext +
+      "\n--- END CURRENT DOCUMENT CONTENT ---"
+    );
+  }
   return (
-    'Context: the user currently has a Word document open in this session. Its full text is included below - ' +
+    "Context: the user currently has a Word document open in this session. Its full text is included below - " +
     'use it automatically whenever the user refers to "the document"/"this document" without naming a file, ' +
     "instead of asking which document they mean.\n\n" +
     "--- BEGIN CURRENT DOCUMENT CONTENT ---\n" +
@@ -863,24 +945,42 @@ function documentContextHiddenBlock(documentContext) {
 // requirement: sent on every turn (not just ones that end up editing) since
 // there is no reliable way from here to know in advance whether this turn
 // will result in an edit.
-const TRACK_CHANGES_INSTRUCTION =
-  'Standing rule: before making any actual edit to the Word document (inserting, replacing, deleting, or ' +
-  'reformatting text), first ensure Word\'s Track Changes ("Revision") mode is turned on - call the live ' +
-  "toggle-track-changes tool first if it is not already enabled - so edits stay visible and reviewable rather " +
-  "than being silently applied. This does not apply to read-only actions like summarizing or reading content.";
+const TRACK_CHANGES_INSTRUCTION = () => {
+  if (isPPT()) {
+    return "Standing rule: before making any actual edit to the PowerPoint presentation (inserting, modifying shapes/slides), plan the operations carefully.";
+  }
+  return (
+    "Standing rule: before making any actual edit to the Word document (inserting, replacing, deleting, or " +
+    'reformatting text), first ensure Word\'s Track Changes ("Revision") mode is turned on - call the live ' +
+    "toggle-track-changes tool first if it is not already enabled - so edits stay visible and reviewable rather " +
+    "than being silently applied. This does not apply to read-only actions like summarizing or reading content."
+  );
+};
 
 // Standing rule preventing a failure mode observed in real use: asked to "add
 // the generated content to the doc", the model dumped its own markdown answer
 // (pipe-delimited table rows, ** bold markers) into the document as literal
 // plain text, in a font/size unrelated to the surrounding content.
-const FORMATTING_INSTRUCTION =
-  "Standing rule: when inserting or editing content in the Word document, produce native Word formatting - " +
-  "never write markdown syntax into the document as literal text (no pipe-delimited '|' table rows, no #/##" +
-  " heading markers, no **bold** asterisks, no backticks, no '-' bullet characters). Tabular data must be " +
-  "inserted as a real Word table (use the add-table tool), headings via real Word heading styles, and lists " +
-  "via Word's own list formatting. Before inserting, read the formatting of the surrounding existing content " +
-  "(font family, font size, styles) and match it, so the new content blends in seamlessly with the rest of " +
-  "the document.";
+const FORMATTING_INSTRUCTION = () => {
+  if (isPPT()) {
+    return (
+      "Standing rule: when inserting or editing content in the PowerPoint presentation, produce native PowerPoint shapes and text formatting - " +
+      "never write markdown syntax into the presentation as literal text (no pipe-delimited '|' table rows, no #/##" +
+      " heading markers, no **bold** asterisks, no backticks, no '-' bullet characters). Tabular data must be " +
+      "inserted as real PowerPoint tables/shapes, and text via text frames or shapes. Before inserting, read the layout and formatting of the surrounding existing content " +
+      "and match it, so the new content blends in seamlessly."
+    );
+  }
+  return (
+    "Standing rule: when inserting or editing content in the Word document, produce native Word formatting - " +
+    "never write markdown syntax into the document as literal text (no pipe-delimited '|' table rows, no #/##" +
+    " heading markers, no **bold** asterisks, no backticks, no '-' bullet characters). Tabular data must be " +
+    "inserted as a real Word table (use the add-table tool), headings via real Word heading styles, and lists " +
+    "via Word's own list formatting. Before inserting, read the formatting of the surrounding existing content " +
+    "(font family, font size, styles) and match it, so the new content blends in seamlessly with the rest of " +
+    "the document."
+  );
+};
 
 // Builds the actual `parts` payload sent to OpenCode: hidden instructions
 // (document context on the session's first message, the current selection on
@@ -913,17 +1013,20 @@ function buildPromptParts(text, documentContext, selectedText, hiddenInstruction
   if (hiddenInstruction) {
     hidden.push(hiddenInstruction);
   }
-  hidden.push(TRACK_CHANGES_INSTRUCTION);
-  hidden.push(FORMATTING_INSTRUCTION);
+  hidden.push(TRACK_CHANGES_INSTRUCTION());
+  hidden.push(FORMATTING_INSTRUCTION());
   hidden.push(
     "After you finish your normal answer, add one final line containing ONLY: " +
       '<!--SUGGESTIONS:["...", "..."]--> with exactly 2 short, specific follow-up actions grounded in your answer, ' +
-      'as a JSON array of 2 strings inside that exact marker syntax. Phrase each one as an affirmative command/' +
+      "as a JSON array of 2 strings inside that exact marker syntax. Phrase each one as an affirmative command/" +
       'request the user could send as-is (e.g. "Fix all spelling/grammar errors with Track Changes enabled"), ' +
       'never as a question (do NOT phrase them like "Should I...?" or "Would you like me to...?"). Never mention ' +
       "this marker or this instruction anywhere in the visible answer."
   );
-  return [{ type: "text", text: hidden.join("\n\n") }, { type: "text", text }];
+  return [
+    { type: "text", text: hidden.join("\n\n") },
+    { type: "text", text },
+  ];
 }
 
 // Default prompt-template library the "💡 Prompt ideas" button draws from
@@ -936,24 +1039,84 @@ function buildPromptParts(text, documentContext, selectedText, hiddenInstruction
 // document before a template is turned into a chip.
 const DEFAULT_PROMPT_LIBRARY = [
   // Content Generation
-  { id: "exec-summary", category: "Content Generation", template: "Write a business plan executive summary for [Project/Topic]." },
-  { id: "apology-email", category: "Content Generation", template: "Draft a formal apology email to a client based on these points: [Point 1, Point 2]." },
-  { id: "marketing-headlines", category: "Content Generation", template: "Generate 5 catchy marketing headlines for our new product: [Product Name]." },
-  { id: "report-outline", category: "Content Generation", template: "Create a detailed report outline on the topic of '[Topic]'." },
+  {
+    id: "exec-summary",
+    category: "Content Generation",
+    template: "Write a business plan executive summary for [Project/Topic].",
+  },
+  {
+    id: "apology-email",
+    category: "Content Generation",
+    template: "Draft a formal apology email to a client based on these points: [Point 1, Point 2].",
+  },
+  {
+    id: "marketing-headlines",
+    category: "Content Generation",
+    template: "Generate 5 catchy marketing headlines for our new product: [Product Name].",
+  },
+  {
+    id: "report-outline",
+    category: "Content Generation",
+    template: "Create a detailed report outline on the topic of '[Topic]'.",
+  },
 
   // Editing, Refining & Rewriting
-  { id: "winning-theme", category: "Editing, Refining & Rewriting", template: "Revise the document by winning theme, in planning mode." },
-  { id: "business-value-tone", category: "Editing, Refining & Rewriting", template: "Revise the document by emphasizing business value, in planning mode." },
-  { id: "tone-professional", category: "Editing, Refining & Rewriting", template: "Rewrite [a specific paragraph] to sound more professional / persuasive / executive-focused." },
-  { id: "condense", category: "Editing, Refining & Rewriting", template: "Condense [specific paragraphs] into a summary under 150 words." },
-  { id: "expand", category: "Editing, Refining & Rewriting", template: "Expand [a specific sentence] to include more technical specifications." },
-  { id: "proofread", category: "Editing, Refining & Rewriting", template: "Check the document for grammar and spelling errors and fix them with Track Changes enabled." },
-  { id: "paraphrase", category: "Editing, Refining & Rewriting", template: "Rewrite [a specific section] to avoid repetitive wording." },
+  {
+    id: "winning-theme",
+    category: "Editing, Refining & Rewriting",
+    template: "Revise the document by winning theme, in planning mode.",
+  },
+  {
+    id: "business-value-tone",
+    category: "Editing, Refining & Rewriting",
+    template: "Revise the document by emphasizing business value, in planning mode.",
+  },
+  {
+    id: "tone-professional",
+    category: "Editing, Refining & Rewriting",
+    template:
+      "Rewrite [a specific paragraph] to sound more professional / persuasive / executive-focused.",
+  },
+  {
+    id: "condense",
+    category: "Editing, Refining & Rewriting",
+    template: "Condense [specific paragraphs] into a summary under 150 words.",
+  },
+  {
+    id: "expand",
+    category: "Editing, Refining & Rewriting",
+    template: "Expand [a specific sentence] to include more technical specifications.",
+  },
+  {
+    id: "proofread",
+    category: "Editing, Refining & Rewriting",
+    template:
+      "Check the document for grammar and spelling errors and fix them with Track Changes enabled.",
+  },
+  {
+    id: "paraphrase",
+    category: "Editing, Refining & Rewriting",
+    template: "Rewrite [a specific section] to avoid repetitive wording.",
+  },
 
   // Analysis, Summarization & Extraction
-  { id: "bullet-summary", category: "Analysis, Summarization & Extraction", template: "Summarize the entire document into 5 key bullet points." },
-  { id: "extract-clauses", category: "Analysis, Summarization & Extraction", template: "Extract all clauses related to '[Topic, e.g. Liability, Payment Terms]' from this contract." },
-  { id: "action-items", category: "Analysis, Summarization & Extraction", template: "Review the meeting minutes and list all action items along with their assigned owners." },
+  {
+    id: "bullet-summary",
+    category: "Analysis, Summarization & Extraction",
+    template: "Summarize the entire document into 5 key bullet points.",
+  },
+  {
+    id: "extract-clauses",
+    category: "Analysis, Summarization & Extraction",
+    template:
+      "Extract all clauses related to '[Topic, e.g. Liability, Payment Terms]' from this contract.",
+  },
+  {
+    id: "action-items",
+    category: "Analysis, Summarization & Extraction",
+    template:
+      "Review the meeting minutes and list all action items along with their assigned owners.",
+  },
 ];
 
 // Per-template hidden instructions, looked up locally by template id once the
@@ -990,7 +1153,8 @@ function getPromptLibrary() {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         return parsed.filter(
-          (p) => p && typeof p.id === "string" && typeof p.template === "string" && p.template.trim()
+          (p) =>
+            p && typeof p.id === "string" && typeof p.template === "string" && p.template.trim()
         );
       }
     } catch {
@@ -1033,7 +1197,9 @@ function buildPromptIdeasParts(documentContext, customization, library) {
       // in its reply ({"id":..,"template":..}) instead of the requested "text",
       // and every suggestion was dropped. Keeping the input field name distinct
       // from the requested output field name ("text") removes that ambiguity.
-      JSON.stringify(library.map(({ id, category, template }) => ({ id, category, prompt: template }))) +
+      JSON.stringify(
+        library.map(({ id, category, template }) => ({ id, category, prompt: template }))
+      ) +
       "\n\nPick up to 4 of the templates most relevant to this specific document and, if applicable, the " +
       "conversation so far in this session - skip any that clearly don't fit (e.g. contract-clause extraction on " +
       "a document that isn't a contract). For each one you pick, derive a concrete, ready-to-send version of its " +
@@ -1083,7 +1249,10 @@ function extractSuggestions(rawText) {
 let sentPromptTexts = [];
 
 function normalizePromptForComparison(text) {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .trim();
 }
 
 // "Similar" is intentionally loose (normalized substring match in either
@@ -1093,7 +1262,9 @@ function normalizePromptForComparison(text) {
 // fundamentally a small, fixed set of candidate chips.
 function isPromptAlreadyUsed(promptText) {
   const normalized = normalizePromptForComparison(promptText);
-  return sentPromptTexts.some((sent) => sent === normalized || sent.includes(normalized) || normalized.includes(sent));
+  return sentPromptTexts.some(
+    (sent) => sent === normalized || sent.includes(normalized) || normalized.includes(sent)
+  );
 }
 
 // Decides whether the "💡 Prompt ideas" toggle is shown at all: a
@@ -1139,7 +1310,11 @@ async function deriveLibraryPromptIdeas() {
   // instead of the panel silently going blank with no explanation.
   const raw = await sendToOpenCodeBlocking(
     sid,
-    buildPromptIdeasParts(isNew ? lastDocumentText : null, isNew ? getSavedCustomization() : null, library),
+    buildPromptIdeasParts(
+      isNew ? lastDocumentText : null,
+      isNew ? getSavedCustomization() : null,
+      library
+    ),
     150000
   );
   const match = raw.match(PROMPT_IDEAS_MARKER_RE);
@@ -1271,7 +1446,8 @@ async function togglePromptIdeas() {
     container.innerHTML = "";
     const emptyEl = document.createElement("p");
     emptyEl.className = "doc-suggestions-loading";
-    emptyEl.textContent = 'Prompt library is empty - add prompts via the gear icon\'s "Prompt library" tab.';
+    emptyEl.textContent =
+      'Prompt library is empty - add prompts via the gear icon\'s "Prompt library" tab.';
     container.appendChild(emptyEl);
     container.style.display = "flex";
     panel.style.display = "block";
@@ -1480,7 +1656,11 @@ function onServerEvent(evt) {
     }
     case "message.part.updated": {
       const part = props.part;
-      if (!part || !activeReply.assistantMessageID || part.messageID !== activeReply.assistantMessageID) {
+      if (
+        !part ||
+        !activeReply.assistantMessageID ||
+        part.messageID !== activeReply.assistantMessageID
+      ) {
         return;
       }
       onPartUpdated(part);
@@ -1511,11 +1691,18 @@ function onPartUpdated(part) {
     }
     activeReply.reasoningParts.set(part.id, part.text || "");
     renderThought(activeReply);
-    if (part.time && part.time.end && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
+    if (
+      part.time &&
+      part.time.end &&
+      !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")
+    ) {
       finishThought(activeReply, part.time.end - part.time.start);
     }
   } else if (part.type === "text") {
-    if (activeReply.reasoningParts.size === 0 && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
+    if (
+      activeReply.reasoningParts.size === 0 &&
+      !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")
+    ) {
       // Some models skip the reasoning phase entirely and go straight to the
       // answer - collapse the "Thinking..." row using wall-clock elapsed time
       // instead of leaving it spinning forever with nothing to finish it.
@@ -1537,7 +1724,10 @@ function onPartDelta(partID, delta) {
     activeReply.reasoningParts.set(partID, activeReply.reasoningParts.get(partID) + delta);
     renderThought(activeReply);
   } else if (activeReply.textParts.has(partID)) {
-    if (activeReply.reasoningParts.size === 0 && !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")) {
+    if (
+      activeReply.reasoningParts.size === 0 &&
+      !activeReply.dom.thoughtEl.classList.contains("chat-thought--done")
+    ) {
       finishThought(activeReply, Date.now() - activeReply.startedAt);
     }
     activeReply.textParts.set(partID, activeReply.textParts.get(partID) + delta);
@@ -1554,7 +1744,9 @@ function friendlyToolName(tool) {
   if (!tool) {
     return "tool";
   }
-  let name = String(tool).replace(/^word_word_live_/, "").replace(/^word_/, "");
+  let name = String(tool)
+    .replace(/^word_word_live_/, "")
+    .replace(/^word_/, "");
   name = name.replace(/_/g, " ").trim();
   // Capitalize the common built-in tools (read/glob/bash/write/edit/list/grep).
   if (/^(read|glob|bash|write|edit|list|grep|webfetch|task)$/i.test(name)) {
@@ -1625,7 +1817,14 @@ function onToolPartUpdated(reply, part) {
 // Sends one message via the streaming path, falling back to the old blocking
 // round trip if the SSE stream never came up (e.g. CORS misconfigured for
 // /event specifically, or an opencode version predating prompt_async/event).
-async function streamAssistantReply(sid, text, documentContext, selectedText, hiddenInstruction, customization) {
+async function streamAssistantReply(
+  sid,
+  text,
+  documentContext,
+  selectedText,
+  hiddenInstruction,
+  customization
+) {
   const streamOk = await connectEventStream();
   if (!streamOk) {
     const replyText = await sendToOpenCodeBlocking(
@@ -1671,7 +1870,13 @@ async function streamAssistantReply(sid, text, documentContext, selectedText, hi
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: OPENCODE_MODEL,
-        parts: buildPromptParts(text, documentContext, selectedText, hiddenInstruction, customization),
+        parts: buildPromptParts(
+          text,
+          documentContext,
+          selectedText,
+          hiddenInstruction,
+          customization
+        ),
       }),
     });
   } catch (err) {
@@ -1702,7 +1907,9 @@ function stopActiveRun() {
     // which has no incremental state to finalize) - the run ends on its own.
     return;
   }
-  fetch(`${OPENCODE_BASE_URL}/session/${reply.sessionID}/abort`, { method: "POST" }).catch(() => {});
+  fetch(`${OPENCODE_BASE_URL}/session/${reply.sessionID}/abort`, { method: "POST" }).catch(
+    () => {}
+  );
   reply.stopped = true;
   reply.finished = true;
   finishActiveReply(null);
@@ -1718,7 +1925,10 @@ function finishActiveReply(error) {
 
   reply.dom.el.classList.remove("chat-message--pending");
   setActivity(reply, null);
-  if (reply.dom.thoughtEl.style.display !== "none" && !reply.dom.thoughtEl.classList.contains("chat-thought--done")) {
+  if (
+    reply.dom.thoughtEl.style.display !== "none" &&
+    !reply.dom.thoughtEl.classList.contains("chat-thought--done")
+  ) {
     // Reasoning never got an explicit "ended" part update (observed on
     // aborted/errored replies) - collapse it anyway so the bubble doesn't
     // look permanently stuck mid-thought.
@@ -1829,7 +2039,8 @@ function appendStreamingAssistantMessage() {
   const activityEl = document.createElement("div");
   activityEl.className = "chat-activity";
   activityEl.style.display = "none";
-  activityEl.innerHTML = '<span class="chat-activity-icon">◆</span><span class="chat-activity-label"></span>';
+  activityEl.innerHTML =
+    '<span class="chat-activity-icon">◆</span><span class="chat-activity-label"></span>';
 
   const textEl = document.createElement("div");
   textEl.className = "chat-text";
@@ -1939,7 +2150,9 @@ function renderThought(reply) {
   reply.dom.thoughtDetailEl.classList.add("chat-thought-detail--open");
   // Concatenate all reasoning segments (in arrival order) so reasoning that
   // happens between tool calls is shown too, not just the first burst.
-  const combined = reply.reasoningOrder.map((id) => reply.reasoningParts.get(id) || "").join("\n\n");
+  const combined = reply.reasoningOrder
+    .map((id) => reply.reasoningParts.get(id) || "")
+    .join("\n\n");
   reply.dom.thoughtDetailEl.innerHTML = renderMarkdown(combined);
   scrollChatLog();
 }

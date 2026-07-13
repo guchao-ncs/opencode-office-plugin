@@ -7,35 +7,35 @@ built and why*.
 
 ## 1. Overview
 
-AI Assistant is a Word task pane add-in that lets a user chat with an AI
-agent (OpenCode) and have that agent read and edit the Word document hosting
-the task pane. It is entirely local and non-admin: no data leaves the machine
+AI Assistant is a Word and PowerPoint task pane add-in that lets a user chat with an AI
+agent (OpenCode) and have that agent read and edit the Word document or PowerPoint presentation
+hosting the task pane. It is entirely local and non-admin: no data leaves the machine
 except to whatever LLM provider OpenCode is configured to call, and nothing
 requires elevated privileges to install or run.
 
 Three independent processes cooperate at runtime:
 
 ```
-┌─────────────────────────────┐       ┌──────────────────────────┐
-│ Word (WebView2 host)         │       │ opencode serve            │
-│  └─ task pane (Office.js)    │──────▶│  :4098, --cors for the    │
-│     https://localhost:3000   │ fetch │  task pane's origin       │
-└─────────────────────────────┘       └────────────┬─────────────┘
-                                                     │ stdio (local MCP,
-                                                     │ declared in
-                                                     │ opencode.json)
-                                                     ▼
-                                        ┌──────────────────────────┐
-                                        │ word-mcp-live (uvx)       │
-                                        │  live tools: COM on Win,
-                                        │  JXA on macOS upstream
-                                        └────────────┬─────────────┘
-                                                     ▼
-                                        ┌──────────────────────────┐
-                                        │ Microsoft Word            │
-                                        │  target document must be  │
-                                        │  explicitly matched       │
-                                        └──────────────────────────┘
+┌─────────────────────────────────┐       ┌──────────────────────────┐
+│ Office App (Word / PowerPoint)  │       │ opencode serve            │
+│  └─ task pane (Office.js)        │──────▶│  :4098, --cors for the    │
+│     https://localhost:3000       │ fetch │  task pane's origin       │
+└─────────────────────────────────┘       └────────────┬─────────────┘
+                                                       │ stdio (local MCP,
+                                                       │ declared in
+                                                       │ opencode.json)
+                                                       ▼
+                                          ┌──────────────────────────┐
+                                          │ wincom-mcp or word-mcp   │
+                                          │  live tools: COM on Win, │
+                                          │  JXA on macOS upstream   │
+                                          └────────────┬─────────────┘
+                                                       ▼
+                                          ┌──────────────────────────┐
+                                          │ Word / PowerPoint        │
+                                          │  target document must be  │
+                                          │  explicitly matched       │
+                                          └──────────────────────────┘
 ```
 
 No custom backend/proxy server exists. The task pane talks directly to

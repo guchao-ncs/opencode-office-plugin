@@ -4,7 +4,7 @@
   "description": "Local, non-admin AI document assistant side panel for Microsoft Word, powered by OpenCode.",
   "license": "MIT",
   "config": {
-    "app_to_debug": "word",
+    "app_to_debug": "powerpoint",
     "app_type_to_debug": "desktop",
     "dev_server_port": 3000
   },

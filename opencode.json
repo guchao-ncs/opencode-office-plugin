@@ -13,6 +13,17 @@
         "MCP_AUTHOR": "Gu Chao",
         "MCP_AUTHOR_INITIALS": "GC"
       }
+    },
+    "powerpoint": {
+      "type": "local",
+      "command": ["uvx", "ppt-mcp"],
+      "enabled": true,
+      "timeout": 90000,
+      "environment": {
+        "MCP_AUTHOR": "Gu Chao",
+        "MCP_AUTHOR_INITIALS": "GC",
+        "PPT_AUTO_DISMISS_DIALOG": "true"
+      }
     }
   }
 }
