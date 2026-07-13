@@ -111,6 +111,19 @@ body {
     color: #605e5c;
 }
 
+/* Shown in the Settings tab when a harness vault is detected: identity comes
+   from the vault, so the manual fields below it are disabled. */
+.harness-banner {
+    font-size: 12px;
+    line-height: 1.4;
+    padding: 8px 10px;
+    border-radius: 4px;
+    background-color: #eff6fc;
+    border: 1px solid #c7e0f4;
+    color: #204e73;
+}
+
+
 .settings-textarea {
     font-family: inherit;
     font-size: inherit;
@@ -389,6 +402,7 @@ body {
     flex: 0 0 auto;
     display: flex;
     justify-content: flex-end;
+    gap: 6px;
     padding: 6px 12px 0 12px;
 }
 
@@ -466,12 +480,24 @@ body {
 
 .chat-input {
     flex: 1 1 auto;
-    resize: none;
+    /* User-resizable, bounded to 2-6 rows. box-sizing:border-box so the
+       min/max-height calcs (line-height*rows + vertical padding + border)
+       land on exact row counts. */
+    resize: vertical;
+    box-sizing: border-box;
+    line-height: 1.4;
+    min-height: calc(1.4em * 2 + 14px);
+    max-height: calc(1.4em * 6 + 14px);
     font-family: inherit;
     font-size: inherit;
     padding: 6px 8px;
     border: 1px solid #8a8886;
     border-radius: 4px;
+}
+
+/* Keep the gold floppy-disk icon from being squished by the pill's flex. */
+.save-icon {
+    flex: 0 0 auto;
 }
 
 /* Claude.ai-style round send button: a filled circle with an up arrow,

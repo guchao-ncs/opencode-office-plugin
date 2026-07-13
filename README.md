@@ -169,7 +169,38 @@ correctly with:
 opencode mcp list
 ```
 
-## Optional: System Instruction, Persona & Prompt library (gear icon)
+## Harness mode (auto-detected Solution Architect vault)
+
+If a Solution Architect **harness vault** — any folder containing
+`_agentic/os/AGENTS.md` (alongside `SOUL.md`, `USER.md`, and a `memory/`
+folder) — sits next to or above this plugin's folder, the static server
+auto-detects it (`scripts/serve-static.js` scans the plugin's ancestors and
+immediate siblings) and the task pane switches into **harness mode**:
+
+- The Settings tab **hides the manual System Instruction / Persona fields**
+  and shows a banner naming the vault. Identity, user context, and conventions
+  come from the vault instead: each new conversation's first message carries a
+  scoped instruction telling the agent to read the vault's `SOUL.md` /
+  `USER.md` / `AGENTS.md` (and today's/yesterday's memory + `MEMORY.md` if
+  present) and follow them. The agent is explicitly told **not** to run the
+  harness's maintenance scripts, memory-graph, or graphify — this is a
+  lightweight "read the identity" integration, not full harness participation
+  (opencode still runs from the plugin folder, not the vault).
+- A **💾 Save to memory** button appears in the toolbar next to **💡 Prompt
+  ideas**. Click it to have the agent append this conversation's key points to
+  `<vault>\_agentic\os\memory\<today>.md` and promote durable items to
+  `MEMORY.md`, following the vault's own memory rules (it skips if the
+  memory-graph lock is held, and never overwrites). Note this writes into the
+  vault, so its git working tree will show the change.
+
+Detection is best-effort and only happens when the task pane is served by
+`serve-static` (the installed/autostart path). Served any other way (webpack
+dev-server, nginx), or with no vault nearby, the task pane stays in the
+generic manual mode below. Because `opencode.json` grants blanket
+`external_directory` access, the agent can read/write the whole vault — see
+the note under the gear-icon section and `tech-design-spec.md` §4.
+
+## Generic mode: System Instruction, Persona & Prompt library (gear icon)
 
 The task pane's header has a gear icon (⚙) that opens a panel with two
 tabs. The **Settings** tab has two fields:
@@ -236,6 +267,7 @@ Or run a single phase, e.g. `.\tests\phase3-opencode-server.ps1`.
 | `phase7-readme.ps1` | README.md documents the operational details from earlier phases |
 | `phase8-autostart.ps1` | manifest/taskpane autoopen wiring, plus a real functional round trip of `start-background-services.ps1` and `install-autostart.ps1`/`uninstall-autostart.ps1` |
 | `phase9-settings-panel.ps1` (+ `phase9-settings-panel.mjs`) | the gear-icon panel: Settings tab (saves/re-fills System Instruction & Persona across reloads, legacy harness-root migration, Clear) and Prompt library tab (default seeding, edit/delete/add, persistence, reset to defaults) — driven headlessly via `playwright-core`, no `opencode serve` needed since the panel is pure client-side |
+| `phase10-harness.ps1` (+ `phase10-harness.mjs`) | harness auto-detection (`serve-static` `/harness-info` against a temp `_agentic/os/AGENTS.md` layout) and harness-mode UI (hidden manual Settings fields, banner, "Save to memory" pill in the toolbar posting a memory-write turn) — headless via `playwright-core`, opencode stubbed so no real vault or server is needed |
 
 Phase 5, 6, 8, and 9 spin up real background processes (dev server, `opencode
 serve`) and, for Phase 6, a real visible Word window — they are integration

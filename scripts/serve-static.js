@@ -24,7 +24,71 @@ const path = require("path");
 const devCerts = require("office-addin-dev-certs");
 
 const distDir = path.join(__dirname, "..", "dist");
+const pluginRoot = path.join(__dirname, "..");
 const port = process.env.npm_package_config_dev_server_port || 3000;
+
+// Detects a Solution Architect harness vault on this machine so the task pane
+// can switch to "harness mode" (see taskpane.js). A vault is any directory
+// containing `_agentic/os/AGENTS.md`. We look in two places, since the plugin
+// is installed alongside the vault, not inside it:
+//   1. every ancestor of the plugin directory (in case it IS nested one day)
+//   2. the plugin's immediate siblings (the common layout: the vault and this
+//      plugin are two folders under the same projects directory)
+// First match wins; the resolved absolute path is shown in the UI so the user
+// can confirm which vault was picked. Detection is best-effort and never
+// throws - any FS error just means "no harness" (generic mode).
+function detectHarnessRoot() {
+  // HARNESS_DETECT_BASE overrides where detection starts (defaults to the
+  // plugin root). Used by the phase10 test to point detection at a controlled
+  // temp layout; also lets an advanced user force a specific search base.
+  const base = process.env.HARNESS_DETECT_BASE || pluginRoot;
+  const marker = path.join("_agentic", "os", "AGENTS.md");
+  const hasMarker = (dir) => {
+    try {
+      return fs.statSync(path.join(dir, marker)).isFile();
+    } catch {
+      return false;
+    }
+  };
+
+  // 1) Ancestors of the base directory (including the base itself).
+  let dir = base;
+  while (true) {
+    if (hasMarker(dir)) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
+  }
+
+  // 2) Immediate siblings (one level only, to avoid a broad/slow scan).
+  try {
+    const parent = path.dirname(base);
+    for (const name of fs.readdirSync(parent)) {
+      const sibling = path.join(parent, name);
+      if (sibling === base) {
+        continue;
+      }
+      let isDir = false;
+      try {
+        isDir = fs.statSync(sibling).isDirectory();
+      } catch {
+        isDir = false;
+      }
+      if (isDir && hasMarker(sibling)) {
+        return sibling;
+      }
+    }
+  } catch {
+    // parent unreadable - fall through to "no harness".
+  }
+  return null;
+}
+
+const harnessRoot = detectHarnessRoot();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -50,6 +114,24 @@ function handleRequest(req, res) {
 
   // Strip query/hash, default "/" to the taskpane entry point.
   let urlPath = decodeURIComponent((req.url || "/").split("?")[0].split("#")[0]);
+
+  // Harness detection signal for the task pane (mode + root only, never file
+  // contents). Absent on webpack dev-server / nginx, where the task pane just
+  // falls back to generic mode.
+  if (urlPath === "/harness-info") {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(harnessRoot ? { mode: "harness", root: harnessRoot } : { mode: "generic" }));
+    return;
+  }
+
+  // Browsers auto-request /favicon.ico; we don't ship one. Answer 204 (rather
+  // than 404) so it doesn't surface as a console error.
+  if (urlPath === "/favicon.ico") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   if (urlPath === "/") {
     urlPath = "/taskpane.html";
   }
@@ -100,6 +182,7 @@ async function main() {
   });
   server.listen(port, () => {
     console.log(`Serving dist/ over HTTPS on https://localhost:${port}`);
+    console.log(harnessRoot ? `Harness detected: ${harnessRoot}` : "No harness detected (generic mode)");
   });
 }
 

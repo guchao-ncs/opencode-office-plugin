@@ -90,6 +90,15 @@ module.exports = async (env, options) => {
         options: env.WEBPACK_BUILD || options.https !== undefined ? options.https : await getHttpsOptions(),
       },
       port: process.env.npm_package_config_dev_server_port || 3000,
+      // The task pane calls /harness-info on load to decide generic vs harness
+      // mode (see taskpane.js applyHarnessMode). Harness detection only exists
+      // in the static server (scripts/serve-static.js); the dev server is a
+      // development tool, so it always reports generic. Answering here (rather
+      // than 404ing) keeps the fetch clean in dev mode.
+      setupMiddlewares: (middlewares, devServer) => {
+        devServer.app.get("/harness-info", (_req, res) => res.json({ mode: "generic" }));
+        return middlewares;
+      },
     },
   };
 

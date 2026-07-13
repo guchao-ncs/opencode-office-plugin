@@ -272,6 +272,28 @@ migration (`migrateLegacyHarnessSetting`) rewrites a saved legacy path
 into the equivalent read-and-follow System Instruction, then deletes the
 legacy `openCodeHarnessRoot` key.
 
+**Harness mode (auto-detected).** `scripts/serve-static.js` (Node, so it has
+filesystem access the browser task pane lacks) scans the plugin folder's
+ancestors and immediate siblings for a Solution Architect vault — any dir
+containing `_agentic/os/AGENTS.md` — and exposes the result at
+`GET /harness-info` as `{mode, root}` (signal only, never file contents). On
+load the task pane calls `/harness-info` (`applyHarnessMode`); if a vault is
+found it hides the manual System Instruction/Persona fields (and their
+Save/Clear), shows a banner, and reveals a "Save to memory" pill in the
+toolbar beside "Prompt ideas". In this mode the first-message
+injection (`getSavedCustomization` → `harnessHiddenBlock`) tells the agent to
+read the vault's `SOUL.md`/`USER.md`/`AGENTS.md` (+ recent memory) and adopt
+them, with a hard boundary against running the harness's maintenance
+scripts/memory-graph/graphify or editing anything unprompted — a deliberate
+"read the identity" integration rather than full harness participation
+(opencode still runs from the plugin folder, not the vault, avoiding
+two-agent/maintenance/config-merge/git-nesting problems). "Save to memory"
+(`onSaveToMemory`) fires a silent turn on the current session asking the agent
+to append the conversation's key points to the vault's daily note and curate
+`MEMORY.md` per the vault's own rules, honoring the memory-graph lock. Absent
+`/harness-info` (webpack dev-server, nginx) or with no vault nearby, the task
+pane stays in the generic manual mode.
+
 The **Prompt library** tab makes the "Prompt ideas" template library
 user-editable. The live library lives in `localStorage` (key
 `openCodePromptLibrary`, seeded from `DEFAULT_PROMPT_LIBRARY` in
@@ -327,7 +349,12 @@ included by id) and closes the panel.
   folders without a server restart. The mitigating context is that this is
   a local, single-user tool whose agent only acts on the user's own
   prompts. There is also no validation of what the user can put in the
-  settings fields — intentional, for the same reason.
+  settings fields — intentional, for the same reason. In harness mode (§3.4)
+  this same grant is what lets the agent read the detected vault's identity
+  files and write its memory notes; it also means the agent can read/write the
+  entire vault (e.g. `my-solutions/` client data), so the injected harness
+  instruction deliberately forbids unprompted edits and the only write path is
+  the explicit "Save to memory" button.
 
 ## 5. Notable findings from implementation
 
@@ -410,5 +437,5 @@ opencode+office/
 │   └── uninstall-autostart.ps1          removes it
 └── tests/
     ├── run-all.ps1              regression runner
-    └── phase1..9-*.ps1/.mjs      per-phase tests
+    └── phase1..10-*.ps1/.mjs     per-phase tests
 ```

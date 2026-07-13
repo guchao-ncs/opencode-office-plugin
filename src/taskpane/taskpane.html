@@ -35,19 +35,22 @@
                 <button type="button" id="tab-btn-library" class="settings-tab">Prompt library</button>
             </div>
             <div id="tab-settings" class="settings-tab-content">
-                <label for="system-instruction-input">System Instruction</label>
-                <textarea id="system-instruction-input" class="settings-textarea" rows="4"
-                    placeholder="Standing rules the assistant must follow in every conversation, e.g. &quot;Always reply in formal English. Focus on tender/proposal quality.&quot;"></textarea>
-                <label for="persona-input">Persona</label>
-                <textarea id="persona-input" class="settings-textarea" rows="4"
-                    placeholder="Who the assistant should be, e.g. &quot;You are a senior bid manager at NCS with 15 years of government-tender experience.&quot;"></textarea>
-                <div class="settings-panel-actions">
-                    <button type="button" id="settings-save" class="ms-Button ms-Button--primary">
-                        <span class="ms-Button-label">Save</span>
-                    </button>
-                    <button type="button" id="settings-clear" class="ms-Button">
-                        <span class="ms-Button-label">Clear</span>
-                    </button>
+                <div id="harness-banner" class="harness-banner" style="display: none;"></div>
+                <div id="manual-settings-fields">
+                    <label for="system-instruction-input">System Instruction</label>
+                    <textarea id="system-instruction-input" class="settings-textarea" rows="4"
+                        placeholder="Standing rules the assistant must follow in every conversation, e.g. &quot;Always reply in formal English. Focus on tender/proposal quality.&quot;"></textarea>
+                    <label for="persona-input">Persona</label>
+                    <textarea id="persona-input" class="settings-textarea" rows="4"
+                        placeholder="Who the assistant should be, e.g. &quot;You are a senior bid manager at NCS with 15 years of government-tender experience.&quot;"></textarea>
+                    <div id="settings-actions" class="settings-panel-actions">
+                        <button type="button" id="settings-save" class="ms-Button ms-Button--primary">
+                            <span class="ms-Button-label">Save</span>
+                        </button>
+                        <button type="button" id="settings-clear" class="ms-Button">
+                            <span class="ms-Button-label">Clear</span>
+                        </button>
+                    </div>
                 </div>
                 <p id="settings-status" class="settings-status"></p>
             </div>
@@ -72,7 +75,16 @@
         </section>
         <div id="chat-log" class="chat-log" aria-live="polite"></div>
         <div id="prompt-ideas-toolbar" class="prompt-ideas-toolbar" style="display: none;">
-            <button type="button" id="prompt-ideas-toggle" class="prompt-ideas-toggle">
+            <button type="button" id="memory-save" class="prompt-ideas-toggle" style="display: none;">
+                <svg class="save-icon" width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 3h13l3 3v15a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="#E6A817"/>
+                    <rect x="7" y="13" width="10" height="7" rx="0.5" fill="#fff"/>
+                    <rect x="8" y="4" width="7" height="4" rx="0.5" fill="#fff"/>
+                    <rect x="12" y="4.6" width="2.2" height="2.8" fill="#E6A817"/>
+                </svg>
+                <span id="memory-save-label">Save to memory</span>
+            </button>
+            <button type="button" id="prompt-ideas-toggle" class="prompt-ideas-toggle" style="display: none;">
                 <span aria-hidden="true">💡</span> Prompt ideas
             </button>
         </div>
