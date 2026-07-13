@@ -7,67 +7,75 @@ built and why*.
 
 ## 1. Overview
 
-AI Assistant is a Word and PowerPoint task pane add-in that lets a user chat with an AI
-agent (OpenCode) and have that agent read and edit the Word document or PowerPoint presentation
-hosting the task pane. It is entirely local and non-admin: no data leaves the machine
-except to whatever LLM provider OpenCode is configured to call, and nothing
-requires elevated privileges to install or run.
+AI Assistant is a non-admin, local AI side-panel assistant supporting Microsoft Word, Excel, PowerPoint, and Outlook. It allows the user to chat with an AI agent (OpenCode) and enables the agent to read and edit the hosting document, sheet, or presentation. For Outlook, it supports analyzing emails and inserting compose drafts. 
 
-Three independent processes cooperate at runtime:
+Four independent processes cooperate at runtime:
 
 ```
-┌─────────────────────────────────┐       ┌──────────────────────────┐
-│ Office App (Word / PowerPoint)  │       │ opencode serve            │
-│  └─ task pane (Office.js)        │──────▶│  :4098, --cors for the    │
-│     https://localhost:3000       │ fetch │  task pane's origin       │
-└─────────────────────────────────┘       └────────────┬─────────────┘
-                                                       │ stdio (local MCP,
-                                                       │ declared in
-                                                       │ opencode.json)
-                                                       ▼
-                                          ┌──────────────────────────┐
-                                          │ wincom-mcp or word-mcp   │
-                                          │  live tools: COM on Win, │
-                                          │  JXA on macOS upstream   │
-                                          └────────────┬─────────────┘
-                                                       ▼
-                                          ┌──────────────────────────┐
-                                          │ Word / PowerPoint        │
-                                          │  target document must be  │
-                                          │  explicitly matched       │
-                                          └──────────────────────────┘
+┌──────────────────────────────────────────────┐       ┌──────────────────────────┐
+│ Office Hosts (Word/Excel/PowerPoint/Outlook) │       │ opencode serve            │
+│  ├─ task pane (Office.js TaskPaneApp/MailApp)│──────▶│  :4098, --cors for the    │
+│  │  https://localhost:3000                   │ fetch │  task pane's origin       │
+│  └─ Context Menu & Compose Insertion stubs   │       └────────────┬─────────────┘
+└──────────────────────────────────────────────┘                    │ stdio (local MCP,
+                                                                    │ declared in
+                                                                    │ opencode.json)
+                                                                    ▼
+                                                       ┌──────────────────────────┐
+                                                       │ word / ppt / excel       │
+                                                       │ local MCP server subprocess│
+                                                       │ JXA (Mac) / COM (Win)    │
+                                                       └────────────┬─────────────┘
+                                                                    ▼
+                                                       ┌──────────────────────────┐
+                                                       │ Target Document/Sheet/   │
+                                                       │ Presentation (explicitly │
+                                                       │ matched or active target)│
+                                                       └──────────────────────────┘
 ```
 
-No custom backend/proxy server exists. The task pane talks directly to
-OpenCode's own REST API, and OpenCode talks directly to word-mcp-live over
-stdio as a normal MCP tool server — both are off-the-shelf, not hand-rolled.
+No custom backend or proxy server exists. The task pane communicates directly with OpenCode's local REST API, and OpenCode spawns/interacts with the local MCP servers (`word-mcp-live`, `ppt-mcp`, `excel`) over stdio as normal MCP tool providers. For Outlook compose action, insertion is performed directly via the taskpane's Office.js mailbox APIs.
 
 ## 2. Technology stack
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Add-in scaffold | `@microsoft/generator-office` (Yeoman) | XML manifest track (`manifest.xml`), not the unified JSON manifest — required for classic Word sideloading |
-| Task pane UI | Vanilla JS + Office.js, Fluent UI CSS | no framework; MVP scope doesn't need React/state management |
+| Add-in scaffold | `@microsoft/generator-office` (Yeoman) | Dual XML manifests: [manifest.xml](file:///Users/kwongyiu/Development/opencode-office-plugin/manifest.xml) (Word, PowerPoint, Excel TaskPaneApp) and [manifest-outlook.xml](file:///Users/kwongyiu/Development/opencode-office-plugin/manifest-outlook.xml) (Outlook MailApp) |
+| Task pane UI | Vanilla JS + Office.js, Fluent UI CSS | no framework; client-side localStorage controls for custom System Instructions & Prompt templates |
 | Build | Webpack 5 + Babel, `webpack-dev-server` | HTTPS dev server on `:3000` via `office-addin-dev-certs` |
-| Markdown rendering | [`marked`](https://www.npmjs.com/package/marked) | renders assistant replies; see §4 for the XSS mitigation |
-| Agent runtime | [`opencode`](https://opencode.ai) CLI (`opencode-ai` npm package), run as `opencode serve` | real REST API, not a custom wrapper |
-| Word automation | [`word-mcp-live`](https://github.com/ykarapazar/word-mcp-live), invoked via `uvx --from word-mcp-live word_mcp_server` | Upstream documents 124 tools: cross-platform `.docx` tools plus live tools using Windows COM and macOS JXA. This project still treats Windows desktop Word as the tested production target. |
-| Test automation | Windows PowerShell 5.1 scripts (`tests/phase*.ps1`) + `playwright-core` for browser-driven UI tests | reuses the system-installed Edge instead of downloading a bundled Chromium |
+| Markdown rendering | [`marked`](https://www.npmjs.com/package/marked) | renders assistant replies; customized to strip suggestion markers and block unsafe URI schemes |
+| Agent runtime | [`opencode`](https://opencode.ai) CLI, run as `opencode serve` | real REST API (`POST /session`, `POST /session/{id}/prompt_async`, `/event` SSE stream) |
+| Word automation | [`word-mcp-live`](https://github.com/ykarapazar/word-mcp-live), invoked via launcher script | Python COM/JXA client exposing 124 tools; supports explicit target document matching to avoid focus mismatch |
+| PowerPoint automation| `ppt-mcp` (spawned via `uvx`) | Python COM client exposing slide and shape manipulation tools |
+| Excel automation | `excel` MCP server ([scripts/excel_mcp_server.py](file:///Users/kwongyiu/Development/opencode-office-plugin/scripts/excel_mcp_server.py)) | Written using `fastmcp` and `pandas`. Uses JXA (macOS) and pywin32 COM (Windows) for worksheet automation and formulas, plus local file queries using pandas. |
+| Test automation | Windows PowerShell 5.1 scripts (`tests/phase*.ps1`) + Playwright for headless UI tests | Runs headlessly via playwright-core using the system's pre-installed Edge browser |
 
 ## 3. Components
 
 ### 3.1 Task pane (`src/taskpane/`)
 
+### 3.0 Dual-Manifest Design
+
+The plugin uses a dual-manifest architecture to support both task pane and mail applications:
+- **[manifest.xml](file:///Users/kwongyiu/Development/opencode-office-plugin/manifest.xml)**: Configured as a `TaskPaneApp` for Word (`Document`), Excel (`Workbook`), and PowerPoint (`Presentation`). It specifies the taskpane page URL and defines contextual menu actions for text selections (Word/PowerPoint) and cell selections (Excel) using ribbon extension points.
+- **[manifest-outlook.xml](file:///Users/kwongyiu/Development/opencode-office-plugin/manifest-outlook.xml)**: Configured as a `MailApp` for Outlook mailboxes. It defines surface commands for message read surfaces (`MessageReadCommandSurface`) and message compose surfaces (`MessageComposeCommandSurface`), directing them to the same taskpane URL.
+
+### 3.1 Task pane (`src/taskpane/`)
+
 - `taskpane.html` — chat log (`#chat-log`) + input form (`#chat-form`,
   `#chat-input`, `#chat-send`), gated behind `Office.onReady`.
-- `taskpane.js` — owns the OpenCode session lifecycle and chat rendering:
+- `taskpane.js` — owns the OpenCode session lifecycle, context building, and chat rendering:
   - `ensureSession()` — lazily `POST /session` once per task pane load,
     caches the returned `session.id` in memory (`sessionId` module var).
-  - `getActiveDocumentText()` — reads `context.document.body.text` through
-    Word JavaScript APIs and injects it as hidden context on a new
-    OpenCode session's first user message.
-  - `getSelectedText()` — reads `context.document.getSelection().text` on
-    every user message and injects it as per-turn hidden context.
+  - `getActiveDocumentText()` — reads the active document's/presentation's/worksheet's contents and formats it:
+    - **Word**: Reads `context.document.body.text` via `Word.run()`.
+    - **Excel**: Reads used range values, formulas, and cells via `Excel.run()`. Formats active sheet data into GFM Markdown tables and detects formula errors.
+    - **Outlook**: Reads the active item's subject, sender, and body text using the Office.js mailbox body API.
+    - **PowerPoint**: PowerPoint text reading is delegated to the `ppt-mcp` automation server.
+  - `getSelectedText()` — reads selection coordinates and values on every user message:
+    - **Word**: Highlighted text via `Word.run(getSelection())`.
+    - **Excel**: Highlighted cell coordinates, values, and formulas via `Excel.run(getSelectedRange())`.
+    - **PowerPoint/Outlook**: Highlighted selection via `getSelectedDataAsync()`.
   - `streamAssistantReply()` — sends `POST /session/{id}/prompt_async`
     and renders reply deltas from OpenCode's global `GET /event` SSE
     stream, falling back to blocking `POST /session/{id}/message` if SSE is
@@ -79,16 +87,15 @@ stdio as a normal MCP tool server — both are off-the-shelf, not hand-rolled.
 - `taskpane.css` — flex-column chat layout (log grows, input row pinned to
   the bottom); user/assistant/error message bubbles are visually distinct.
 
-The task pane reads enough Word document state to improve grounding: whole
-body text once per new OpenCode session and selected text on every turn.
+The task pane reads enough document state to improve grounding: whole
+body/worksheet text once per new OpenCode session and selected text/ranges on every turn.
 These Office.js reads are context only. Actual mutation still goes through
-the agent → MCP tool path (§3.3), because `word-mcp-live` has the richer
+the agent → MCP tool path (§3.3), because the MCP servers have the richer
 live formatting/editing surface.
 
 Current gap: the Office.js reads are scoped to the document hosting the task
-pane, but `word-mcp-live` live tools can target Word's automation-active
-document when their optional `filename` argument is omitted. That means
-multi-document Word sessions can produce a mismatch: the model reasons over
+pane, but live tools can target the host's active automation document when their optional `filename` argument is omitted. That means
+multi-document Word/PowerPoint sessions can produce a mismatch: the model reasons over
 document A while MCP mutates document B. Section 3.4 defines the required
 document-binding fix.
 
@@ -97,11 +104,11 @@ sentinel `<TaskpaneId>`, and `Office.onReady` tags each document (via
 `Office.context.document.settings`) once its task pane has been opened, so
 the pane auto-shows the next time that specific document is reopened —
 without a manual ribbon click. This does not apply to brand-new blank
-documents (see README). Separately, `scripts/start-background-services.ps1`
+documents or Outlook. Separately, `scripts/start-background-services.ps1`
 (optionally installed to run at Windows logon via
 `scripts/install-autostart.ps1`) starts `opencode serve` and a static HTTPS
 server for the pre-built taskpane bundle idempotently, so both are already up
-by the time Word tries to reconnect to the sideloaded add-in (see §5's WEF
+by the time Word/Excel/PowerPoint tries to reconnect to the sideloaded add-in (see §5's WEF
 sideload finding). The static server (`scripts/serve-static.js`) serves the
 `dist/` bundle produced ahead of time by `npm run build`, reusing the same
 `office-addin-dev-certs` certificate and URLs as the webpack dev server;
@@ -110,11 +117,10 @@ left port 3000 unserved long enough to trigger Word's "ADD-IN ERROR" (§5).
 The webpack dev server (`npm run dev-server`) remains the live-recompile tool
 for active development.
 
-The script also self-heals the `word` MCP connection: on every run it polls
-the live `/mcp` status and, if `word` came up `failed` (a logon-time cold
-start can make opencode's handshake with `word-mcp-live` time out), it tries
-a runtime reconnect (`POST /mcp/word/connect`) and then one `opencode serve`
-restart as a last resort.
+The script also self-heals the `word` and `excel` MCP connections: on every run it polls
+the live `/mcp` status and, if either `word` or `excel` came up `failed` (a logon-time cold
+start can make opencode's handshake time out), it tries a runtime reconnect (`POST /mcp/<service>/connect`)
+and then one `opencode serve` restart as a last resort.
 
 ### 3.2 OpenCode server
 
@@ -131,44 +137,31 @@ header. This was discovered empirically (browser console showed a CORS
 error, not a mixed-content error — see §5) and is why the daily-run
 instructions in the README always include `--cors`.
 
-### 3.3 Word automation MCP server (`opencode.json`)
+### 3.3 Automation MCP servers (`opencode.json`)
 
-```json
-{
-  "mcp": {
-    "word": {
-      "type": "local",
-      "command": ["uvx", "--from", "word-mcp-live", "word_mcp_server"],
-      "enabled": true,
-      "environment": {
-        "MCP_AUTHOR": "Gu Chao",
-        "MCP_AUTHOR_INITIALS": "GC"
-      }
-    }
-  }
-}
-```
+All local automation servers are registered in [opencode.json](file:///Users/kwongyiu/Development/opencode-office-plugin/opencode.json) and spawned as local subprocesses over stdio by OpenCode when requested.
 
-OpenCode spawns this as a local subprocess over stdio (standard MCP
-transport) whenever an agent needs a Word tool — no HTTP hop, no custom
-protocol glue. On Windows, `word-mcp-live` live tools attach to an already
-running Microsoft Word instance via COM; on macOS upstream uses JXA for live
-tools. It does not launch Word. This is why a document must already be open
-before asking the agent to edit it.
+#### 3.3.1 Word automation MCP server
+- **Command**: `["uv", "run", "--with", "word-mcp-live", "scripts/word_mcp_launcher.py"]`
+- **Behavior**: On Windows, it binds to the running Microsoft Word instance via COM; on macOS, it delegates to JXA scripts. It uses the custom launcher [scripts/word_mcp_launcher.py](file:///Users/kwongyiu/Development/opencode-office-plugin/scripts/word_mcp_launcher.py) to resolve the active document name and ensure safe binding.
+- **Safety**: Exposes a fixed, auditable set of editing and style actions (e.g. `add_heading`, `add_table`, `format_text`) with native Track Changes support, avoiding arbitrary Python execution.
 
-Upstream live tools accept an optional `filename` parameter. When omitted,
-their documented behavior is to use the active document; when provided, the
-tool attempts to find the matching open document. The current code relies on
-model behavior and hidden instructions, not a hard protocol guarantee, so
-the add-in must explicitly bind the document before destructive live edits
-(§3.4).
+#### 3.3.2 PowerPoint automation MCP server
+- **Command**: `["uvx", "ppt-mcp"]`
+- **Behavior**: Spawns `ppt-mcp` to attach to PowerPoint via Windows COM automation.
+- **Capabilities**: Exposes slide-manipulation (creating/deleting/reordering slides) and shape-manipulation (adding/positioning textboxes, rectangles, lines, and formatting text frames) tools.
 
-This design was chosen over the PRD's original
-`run_word_com_automation(script: str)` tool (arbitrary Python execution
-against the COM object) specifically because `word-mcp-live` exposes a
-**fixed, auditable tool set** (set heading style, insert table, apply
-shading, replace selection, etc.) with tracked-changes support,
-instead of an open code-execution surface.
+#### 3.3.3 Excel automation MCP server
+- **Command**: `["uv", "run", "scripts/excel_mcp_server.py"]`
+- **Implementation**: Written in Python using the `fastmcp` server framework, located in [scripts/excel_mcp_server.py](file:///Users/kwongyiu/Development/opencode-office-plugin/scripts/excel_mcp_server.py).
+- **Cross-Platform Host Automation**:
+  - **macOS JXA**: Spawns an Apple JavaScript-for-Automation script (`osascript -l JavaScript`) that communicates with Microsoft Excel via AppleEvents to read worksheets and write coordinate cells.
+  - **Windows COM**: Imports `win32com.client` and utilizes the Windows COM automation interface. Uses `pythoncom.CoInitialize()` and `pythoncom.CoUninitialize()` to safely initialize COM inside FastMCP's thread-pool execution workers.
+- **Exposed Tools**:
+  - `read_active_sheet`: Returns the used range, dimension counts, values, and cell formulas of the active sheet. Specifically parses and flags formula error strings (e.g., `#REF!`, `#DIV/0!`).
+  - `write_cell`: Takes cell coordinate strings (e.g., `C4`) and writes static text, casted numbers, or Excel formulas (values starting with `=`).
+  - `analyze_excel_file`: Re-uses local pandas library imports to inspect static CSV or Excel files, listing metadata such as sheet lists, shapes, column names, and pandas data types.
+  - `run_pandas_query`: Evaluates dynamic query strings (e.g., `df.query('col > 10')` or groups/aggregations) on a pandas DataFrame representing a local file, returning results formatted as Github-Flavored Markdown tables.
 
 ### 3.4 Document identity binding before live mutation
 
@@ -311,6 +304,23 @@ LLM); "Reset to defaults" restores the built-ins. Each row also has a ⤵
 (same fill-then-edit behavior as suggestion chips, hidden instruction
 included by id) and closes the panel.
 
+### 3.6 Taskpane and Commands Integration
+
+#### 3.6.1 Right-Click Context Menu Integration & Auto-Submit
+Context menu actions in Word, Excel, and PowerPoint allow users to right-click selections and click **Analyze with AI Assistant**:
+1. **Command Surface Execution**: The click is processed in the background command thread by `analyzeSelectionAction` in [src/commands/commands.js](file:///Users/kwongyiu/Development/opencode-office-plugin/src/commands/commands.js).
+2. **Context Extraction**: It runs `getSelectedDataAsync` to extract the highlighted text.
+3. **Cross-Thread Event Dispatch**: If text is returned, the command thread serializes the data and sets it in `localStorage` under the key `contextMenuTrigger`.
+4. **Activation**: It commands the host application to show the taskpane via `Office.addin.showAsTaskpane()`.
+5. **Storage Event Handling**: [src/taskpane/taskpane.js](file:///Users/kwongyiu/Development/opencode-office-plugin/src/taskpane/taskpane.js) registers a listener on the `storage` event. When the `contextMenuTrigger` key changes, it parses the selected text, populates the input field (`#chat-input`), immediately removes `contextMenuTrigger` from `localStorage` to avoid duplicate triggers, and calls `form.requestSubmit()` to auto-submit the prompt.
+6. **Cold Start Re-check**: At startup, `taskpane.js` checks if there is already a `contextMenuTrigger` in `localStorage`. If found (indicating the context menu was triggered while the taskpane was closed), it processes the analysis request after a short delay (500ms) to ensure the session and DOM are fully initialized.
+
+#### 3.6.2 Outlook Compose Mode Insertion
+When the add-in runs within Outlook:
+1. **Context Check**: `isOutlook()` evaluates to `true` if `Office.context.host` equals `Office.HostType.Outlook`.
+2. **Insertion Controls**: Under each assistant response bubble, the UI reveals an **Insert into email** (✍) action button in addition to the standard **Copy** button.
+3. **Office.js Insertion**: Clicking the button calls `writeReplyToEmail(text)` in [src/taskpane/taskpane.js](file:///Users/kwongyiu/Development/opencode-office-plugin/src/taskpane/taskpane.js), which runs `Office.context.mailbox.item.body.setSelectedDataAsync(text, { coercionType: Office.CoercionType.Text })` to insert the text directly at the active cursor position in the email editor.
+
 ## 4. Security posture
 
 - **No arbitrary code execution.** The only Word-mutating surface is
@@ -423,15 +433,19 @@ opencode+office/
 ├── PRD.md                    product requirements (original + revised architecture)
 ├── README.md                 setup, daily run, troubleshooting
 ├── tech-design-spec.md        this document
-├── opencode.json              word-mcp-live MCP server registration
-├── manifest.xml                Office Add-in manifest (XML track)
+├── opencode.json              MCP servers registration (word, powerpoint, excel)
+├── manifest.xml                Office Add-in manifest for Word, Excel, PowerPoint (XML track)
+├── manifest-outlook.xml        Office Add-in manifest for Outlook (XML track)
 ├── package.json / webpack.config.js / babel.config.json
 ├── assets/                    add-in icons
 ├── src/
 │   ├── taskpane/               chat UI (html/js/css)
-│   └── commands/                generator-office boilerplate ribbon command stub
+│   └── commands/                ribbon command/context-menu stub
 ├── scripts/
-│   ├── start-background-services.ps1   idempotent opencode serve + static server launcher (+ MCP self-heal)
+│   ├── excel_mcp_server.py             Excel local MCP server using FastMCP and pandas
+│   ├── word_mcp_launcher.py            Word custom launch wrapper for document binding
+│   ├── powerpoint_mcp_launcher.py      PowerPoint custom launch wrapper for COM targeting
+│   ├── start-background-services.ps1   idempotent serve + static server launcher (+ word/excel self-heal)
 │   ├── serve-static.js                  tiny HTTPS static server for the pre-built dist/ bundle
 │   ├── install-autostart.ps1            builds dist/, writes Startup-folder .vbs autostart wrapper
 │   └── uninstall-autostart.ps1          removes it

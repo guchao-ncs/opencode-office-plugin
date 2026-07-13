@@ -59,6 +59,30 @@ Create a production-ready, minimal viable product (MVP) that integrates an AI Ag
     - Formatting text inside shapes (font size, color, bold, alignment).
 - Requires PowerPoint to already be open (COM `GetActiveObject` on Windows). The launcher script `scripts/powerpoint_mcp_launcher.py` provides a wrapper to resolve the correct presentation instance and handle multi-presentation environments.
 
+### FR-3c: Excel Automation & Data Analyzer
+- **Server Registration**: Register the `excel` local MCP server in [opencode.json](file:///Users/kwongyiu/Development/opencode-office-plugin/opencode.json) pointing to [scripts/excel_mcp_server.py](file:///Users/kwongyiu/Development/opencode-office-plugin/scripts/excel_mcp_server.py) (`"command": ["uv", "run", "scripts/excel_mcp_server.py"]`).
+- **Capabilities**:
+  - **Worksheet Readings**: Retrieve used ranges, cells, and values from the active worksheet using [scripts/excel_mcp_server.py](file:///Users/kwongyiu/Development/opencode-office-plugin/scripts/excel_mcp_server.py)'s `read_active_sheet` tool. Formulate a markdown summary of worksheet state, including data grid rendering, formula values, and explicit formula error detection (identifying errors like `#REF!`, `#DIV/0!`, `#N/A`, etc.).
+  - **Cell Writing**: Update cell values or inject formulas (starting with `=`) to specific coordinate addresses using the `write_cell` tool.
+  - **Pandas Inspection**: Inspect local CSV or Excel files (`analyze_excel_file`) to check shape sizes, sheet structures, column headers, and data types.
+  - **Pandas Data Queries**: Run dynamic pandas DataFrame queries, selections, or aggregations (`run_pandas_query`) on local files using syntax like `df.query('Sales > 1000')` or `df.groupby('Product').mean()`, returning results in structured markdown tables.
+- **Platform Agnostic**: Execute the JXA automation path on macOS or the pywin32 COM client path on Windows depending on the detected platform.
+
+### FR-3d: Outlook Mail Assistant
+- **Deployment**: Use [manifest-outlook.xml](file:///Users/kwongyiu/Development/opencode-office-plugin/manifest-outlook.xml) to deploy as an Outlook MailApp add-in supporting read and edit form settings.
+- **Capabilities**:
+  - **Mail Context Retrieval**: In Read/Edit modes, load the active email's subject, sender, and body text using the Office.js body API inside `getActiveDocumentText()`. Send the content to the OpenCode session automatically as background context.
+  - **Compose Insertion**: For Compose/Edit screens, reveal a "Insert into email" (✍) action button under each reply bubble in [src/taskpane/taskpane.js](file:///Users/kwongyiu/Development/opencode-office-plugin/src/taskpane/taskpane.js). When clicked, call `Office.context.mailbox.item.body.setSelectedDataAsync` to write the generated markdown text directly into the email editor at the current cursor position.
+
+### FR-3e: Context-Aware Menu Actions
+- **Context Menu Integration**: Declare ContextMenu ExtensionPoints in [manifest.xml](file:///Users/kwongyiu/Development/opencode-office-plugin/manifest.xml) targeting `ContextMenuText` (for Word/PowerPoint text selections) and `ContextMenuCell` (for Excel cell ranges), executing `analyzeSelectionAction`.
+- **Execution Workflow**:
+  - Clicking the "Analyze with AI Assistant" right-click menu option triggers `analyzeSelectionAction` in [src/commands/commands.js](file:///Users/kwongyiu/Development/opencode-office-plugin/src/commands/commands.js).
+  - Fetches selection content via Office.js `getSelectedDataAsync()`.
+  - Serializes the content as a `contextMenuTrigger` object inside `localStorage`.
+  - Commands the host to open the taskpane using `Office.addin.showAsTaskpane()`.
+  - The taskpane in [src/taskpane/taskpane.js](file:///Users/kwongyiu/Development/opencode-office-plugin/src/taskpane/taskpane.js) detects the storage event, pre-fills the input box with `Analyze this selection: "<text>"`, and automatically submits the form, providing instant context-aware analysis.
+
 ### FR-4: Bind Agent Context to the Same Document Before Mutation
 - The add-in must treat "the current document" as the document hosting the task pane, not merely whichever Word/PowerPoint document is active when COM automation runs.
 - Before any live-editing MCP tool is used, the hidden prompt must include a document identity block captured from Office.js:

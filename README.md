@@ -14,13 +14,16 @@ hand-rolled "run arbitrary script" tool).
 ## Architecture
 
 ```
-Word/PowerPoint task pane (Office.js, https://localhost:3000)
-        │ fetch()
-        ▼
-opencode serve --port 4098 --cors https://localhost:3000
-        │ stdio (local MCP server, declared in opencode.json)
-        ├──► word-mcp-live (uv) ── win32com ──► Word.Application (already-open document)
-        └──► ppt-mcp (uvx) ─────── win32com ──► PowerPoint.Application (already-open presentation)
+Office App (Word / PowerPoint / Excel / Outlook)
+        │
+        ├──► Task Pane / Mail App UI (Office.js, https://localhost:3000)
+        │       │ fetch()
+        │       ▼
+        └──► opencode serve --port 4098 --cors https://localhost:3000
+                │ stdio (local MCP servers, declared in opencode.json)
+                ├──► word-mcp-live (uv) ── win32com ──► Word.Application (open document)
+                ├──► ppt-mcp (uvx) ─────── win32com ──► PowerPoint.Application (open presentation)
+                └──► excel (uv run) ────── JXA/COM ───► Excel.Application (open workbook)
 ```
 
 The task pane talks directly to OpenCode's real REST API
@@ -35,8 +38,10 @@ server for the full OpenAPI spec), not a custom backend.
 | Python 3.11+ | required by automation tooling | `python --version` |
 | [`uv`/`uvx`](https://docs.astral.sh/uv/) | runs the MCP servers in isolated envs | `uvx --version` |
 | [`opencode` CLI](https://opencode.ai) | the agent runtime (`opencode-ai` on npm) | `opencode --version` |
-| Microsoft Word (desktop, Windows) | the Word automation target | — |
-| Microsoft PowerPoint (desktop, Windows) | the PowerPoint automation target | — |
+| Microsoft Word (desktop) | the Word automation target | — |
+| Microsoft PowerPoint (desktop) | the PowerPoint automation target | — |
+| Microsoft Excel (desktop) | the Excel automation target | — |
+| Microsoft Outlook (desktop or web) | the Outlook email compose/read target | — |
 
 You also need an OpenCode LLM provider configured (`opencode auth login`, or
 edit `~/.config/opencode/opencode.jsonc`) — `opencode providers` should list
@@ -95,13 +100,12 @@ changes. **If you edit anything under `src/`, re-run `npm run build` (or
 `npm run dev-server` (webpack, live recompile) remains the tool to use while
 actively developing.
 
-The script also self-heals the `word` MCP connection: a logon-time cold start
-can make opencode's handshake with `word-mcp-live` time out, leaving the
-connection in a permanent `failed` state (the agent then has no Word tools
-and says it "can't edit the document"). On every run the script polls the
-live `/mcp` status and, if `word` shows `failed`, first tries a runtime
-reconnect (`POST /mcp/word/connect`) and then, as a last resort, restarts
-`opencode serve` once.
+The script also self-heals the `word` and `excel` MCP connections: a logon-time cold start
+can make opencode's handshake with the MCP servers time out, leaving them
+in a permanent `failed` state (the agent then has no Word or Excel tools). On
+every run, the script polls the live `/mcp` status and, if either `word` or `excel`
+shows `failed`, first tries a runtime reconnect (`POST /mcp/<service>/connect`)
+and then, as a last resort, restarts `opencode serve` once.
 
 To start the services immediately without logging out again, run the same
 script directly:
@@ -145,9 +149,9 @@ Before asking the assistant to edit a document or presentation, make sure the ta
 To stop: `npm stop` (unloads the add-in), then Ctrl+C the `opencode serve`
 terminal.
 
-## Word & PowerPoint Automation (`opencode.json`)
+## Word, PowerPoint & Excel Automation (`opencode.json`)
 
-Both automation targets are configured as local MCP servers inside `opencode.json`:
+All three automation targets are configured as local MCP servers inside `opencode.json`:
 
 ```json
 {
@@ -163,6 +167,12 @@ Both automation targets are configured as local MCP servers inside `opencode.jso
       "command": ["uvx", "ppt-mcp"],
       "enabled": true,
       "timeout": 90000
+    },
+    "excel": {
+      "type": "local",
+      "command": ["uv", "run", "scripts/excel_mcp_server.py"],
+      "enabled": true,
+      "timeout": 90000
     }
   }
 }
@@ -170,8 +180,13 @@ Both automation targets are configured as local MCP servers inside `opencode.jso
 
 - **Word**: Uses `word-mcp-live` via a custom launcher script (`scripts/word_mcp_launcher.py`) that resolves the correct active document and applies robust bindings to avoid multi-document mismatch risks.
 - **PowerPoint**: Uses `ppt-mcp` spawned via `uvx ppt-mcp`. This server exposes tools to manipulate slides, add shapes, resize and format elements, and extract text.
+- **Excel**: Uses the `excel` MCP server written using FastMCP and pandas in [scripts/excel_mcp_server.py](file:///Users/kwongyiu/Development/opencode-office-plugin/scripts/excel_mcp_server.py). It exposes:
+  - `read_active_sheet`: Reads range values, formulas, and worksheet info. Detects and highlights formula errors (e.g. `#REF!`, `#DIV/0!`).
+  - `write_cell`: Writes values or Excel formulas (starting with `=`) to coordinate cells (e.g. `C4`).
+  - `analyze_excel_file`: Uses pandas to inspect local CSV or Excel files, returning shape information and column types.
+  - `run_pandas_query`: Evaluates pandas queries/aggregations on `df` for local CSV or Excel files, formatting output as GFM Markdown tables.
 
-Verify that both tools are wired up correctly and showing as connected in the MCP registry:
+Verify that the tools are wired up correctly and showing as connected in the MCP registry:
 
 ```powershell
 opencode mcp list
@@ -253,24 +268,53 @@ the agent only acts on your own prompts, but worth knowing. (A per-path
 grant can't be applied at runtime because opencode's `PATCH /config`
 doesn't persist anything — see `tech-design-spec.md` §5.)
 
-## Targeting & Debugging PowerPoint vs Word
+## Sideloading, Targeting & Debugging Office Hosts
 
-The add-in manifest is configured to support both Microsoft Word and Microsoft PowerPoint. To choose which Office application you want to launch, side-load, and debug when running commands like `npm start` or `npm stop`, modify the `config` block in `package.json`:
+### Dual-Manifest Design
+The project uses a dual-manifest system:
+- `manifest.xml`: Configures the TaskPaneApp for **Word** (Document), **PowerPoint** (Presentation), and **Excel** (Workbook).
+- `manifest-outlook.xml`: Configures the MailApp for **Outlook** (Mailbox).
 
-```json
-  "config": {
-    "app_to_debug": "powerpoint", // Set to "word" to debug Word, or "powerpoint" to debug PowerPoint
-    "app_type_to_debug": "desktop",
-    "dev_server_port": 3000
-  }
-```
+### Targeting Word, PowerPoint, or Excel (manifest.xml)
+To choose which Office host application to launch and debug with the main manifest:
+1. Open `package.json` and locate the `config` block.
+2. Edit `app_to_debug` to `"word"`, `"powerpoint"`, or `"excel"`:
+   ```json
+     "config": {
+       "app_to_debug": "excel", // "word" | "powerpoint" | "excel"
+       "app_type_to_debug": "desktop",
+       "dev_server_port": 3000
+     }
+   ```
+3. Run `npm start` to register the manifest and start the selected host application on Windows.
 
-After changing `"app_to_debug"`, running `npm start` will automatically register the manifest and start the selected host application (Word or PowerPoint) on Windows desktop.
+#### Sideloading on macOS
+For macOS Word, Excel, or PowerPoint desktop clients, sideloading is done by copying the manifest into the host's Web Extension Framework (wef) folder:
+- **Excel**: Copy `manifest.xml` to `~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/`
+- **Word**: Copy `manifest.xml` to `~/Library/Containers/com.microsoft.Word/Data/Documents/wef/`
+- **PowerPoint**: Copy `manifest.xml` to `~/Library/Containers/com.microsoft.PowerPoint/Data/Documents/wef/`
+*(Create the `wef` directory if it does not exist. Reload/Insert My Add-ins in the host ribbon).*
 
-To verify or test PowerPoint automation capabilities manually or through scripts:
-1. Ensure the active presentation is open.
-2. Start the background services using `.\scripts\start-background-services.ps1` (or manually run `opencode serve --port 4098`).
-3. Send requests targeting slide/shape elements inside the chat interface, and confirm the changes take effect on the presentation.
+### Sideloading Outlook (manifest-outlook.xml)
+Sideloading Outlook (on Windows, macOS, or Outlook Web at outlook.office.com) is done manually via the client UI:
+1. In Outlook, click **All Apps** or **More Apps** on the left navigation bar or ribbon, then click **Add apps** or **Get Add-ins**.
+2. Select **Manage your add-ins** or **My Add-ins** -> **Custom Add-ins**.
+3. Select **Add a custom add-in** -> **Add from file...**.
+4. Browse to and upload `manifest-outlook.xml` (or `dist/manifest-outlook.xml`).
+5. The "AI Assistant" ribbon button will appear in message Read surfaces and Compose windows.
+
+### Right-Click "Analyze with AI Assistant" Context Menu
+The Word, Excel, and PowerPoint manifests configure a contextual right-click menu command:
+- **Access**: Highlight text in Word or PowerPoint, or right-click any cell in Excel, and choose **Analyze with AI Assistant**.
+- **Mechanism**: The menu command executes `analyzeSelectionAction` in [src/commands/commands.js](file:///Users/kwongyiu/Development/opencode-office-plugin/src/commands/commands.js), which retrieves the selected content via Office.js `getSelectedDataAsync()`, serializes it as `contextMenuTrigger` in `localStorage`, and opens the taskpane. The taskpane in [src/taskpane/taskpane.js](file:///Users/kwongyiu/Development/opencode-office-plugin/src/taskpane/taskpane.js) intercepts this trigger, pre-fills the input with `Analyze this selection: "<text>"`, and automatically submits the prompt.
+
+### Outlook Compose Mode Insertion
+When composing emails in Outlook, the chat response bubbles in the taskpane show a **Insert into email** (✍) action button. Clicking this button calls `Office.context.mailbox.item.body.setSelectedDataAsync` to write the generated text directly into the email body at the cursor position.
+
+To verify or test automation capabilities:
+1. Ensure the active document, sheet, or presentation is open.
+2. Start the background services using `.\scripts\start-background-services.ps1` (or `scripts/start-background-services.sh` on macOS).
+3. Interact with the chat interface. Confirm edits take effect on the active document or sheet.
 
 ## Testing
 
