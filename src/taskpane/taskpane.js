@@ -95,6 +95,10 @@ function pickThinkingWord(exclude) {
 }
 
 let sessionId = null;
+let lastDocumentUrl = null;
+let lastDocumentHash = null;
+let lastDocumentText = null;
+let documentSessionNonce = null;
 
 // Set by a doc-suggestion chip (see renderDocSuggestions) that needs to carry
 // extra hidden guidance alongside its literal chip text - e.g. the "Revise
@@ -540,7 +544,7 @@ async function onSubmit(event) {
     // becomes part of that session's message history and stays visible to the
     // model on every later turn, so there is no need to re-fetch/re-send it
     // on every message of the same conversation.
-    const documentContext = isNew ? await getActiveDocumentText() : null;
+    const documentContext = isNew ? lastDocumentText : null;
     // Same first-message-only gating as the document context: once the
     // settings instruction is in the session's history, it stays visible to
     // the model on every later turn.
@@ -564,6 +568,18 @@ async function onSubmit(event) {
 }
 
 async function ensureSession() {
+  const docText = await getActiveDocumentText() || "";
+  const docUrl = (typeof Office !== "undefined" && Office.context && Office.context.document) ? Office.context.document.url : null;
+  const docHash = computeTextHash(docText);
+
+  if (sessionId && (docUrl !== lastDocumentUrl || docHash !== lastDocumentHash)) {
+    sessionId = null;
+    sentPromptTexts = [];
+  }
+  lastDocumentUrl = docUrl;
+  lastDocumentHash = docHash;
+  lastDocumentText = docText;
+
   if (sessionId) {
     return { id: sessionId, isNew: false };
   }
@@ -578,6 +594,93 @@ async function ensureSession() {
   const session = await res.json();
   sessionId = session.id;
   return { id: sessionId, isNew: true };
+}
+
+function computeTextHash(text) {
+  if (!text) return "empty";
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) {
+    const chr = text.charCodeAt(i);
+    hash = ((hash << 5) - hash) + chr;
+    hash |= 0;
+  }
+  return "h-" + hash.toString(36);
+}
+
+function getOrGenerateSessionNonce(isUnsaved) {
+  if (!isUnsaved) {
+    documentSessionNonce = null;
+    return null;
+  }
+  if (!documentSessionNonce) {
+    documentSessionNonce = "nonce-" + Math.random().toString(36).substring(2, 10);
+  }
+  return documentSessionNonce;
+}
+
+function getDocumentIdentity() {
+  const url = (typeof Office !== "undefined" && Office.context && Office.context.document) ? Office.context.document.url : null;
+  const isUnsaved = !url;
+  const nonce = getOrGenerateSessionNonce(isUnsaved);
+  let displayName = "Unsaved Document";
+  if (url) {
+    const lastSlash = Math.max(url.lastIndexOf("/"), url.lastIndexOf("\\"));
+    if (lastSlash !== -1) {
+      displayName = url.substring(lastSlash + 1);
+    } else {
+      displayName = url;
+    }
+  }
+  return {
+    url: url || null,
+    isUnsaved,
+    nonce,
+    displayName
+  };
+}
+
+function buildDocumentIdentityBlock(docText) {
+  const docId = getDocumentIdentity();
+  const textHash = computeTextHash(docText);
+  const textLength = docText ? docText.length : 0;
+  const textPreview = docText ? docText.substring(0, 150).replace(/\r?\n/g, " ") + "..." : "None";
+
+  let block = "=== HOST DOCUMENT IDENTITY AND BINDING CONTRACT ===\n";
+  if (docId.isUnsaved) {
+    block += `Document Type: Unsaved Document\n`;
+    block += `Fallback Display Name: ${docId.displayName}\n`;
+    block += `Add-in Session Nonce: ${docId.nonce}\n`;
+    block += `WARNING: This is a newly created, unsaved document. Duplicate 'Document1'-style files cannot be safely disambiguated by display name alone.\n`;
+  } else {
+    block += `Document Type: Saved Document\n`;
+    block += `Document URL/Path: ${docId.url}\n`;
+    block += `Document Name: ${docId.displayName}\n`;
+  }
+  block += `Fresh Text Hash: ${textHash}\n`;
+  block += `Fresh Text Length: ${textLength} characters\n`;
+  block += `Fresh Text Preview: "${textPreview}"\n`;
+  block += `==================================================\n\n`;
+
+  block += "CRITICAL BINDING CONTRACT & SAFETY PROTOCOL FOR MUTATIONS:\n";
+  block += "Before calling any live-editing / mutation tool (such as format_text, add_heading, add_table, search_and_replace, word_live_replace_text, create_custom_style, set_paragraph_spacing, set_table_cell_shading, format_table, etc.):\n\n";
+
+  block += "1. Read-only actions (summarizing, reading context) are permitted without restrictions.\n";
+  block += "2. For saved documents (Document Type: Saved Document):\n";
+  block += "   - You MUST call `word_live_list_open` first.\n";
+  block += "   - Match the 'Document URL/Path' or 'Document Name' above to exactly one open document returned by `word_live_list_open`.\n";
+  block += "   - You MUST pass the matched path or name as the `filename` parameter to all `word_live_*` editing tools. Never pass null or leave `filename` omitted.\n";
+  block += "   - If no exact match or multiple matches exist, you MUST stop immediately, do not mutate, and ask the user to save or close duplicate files.\n";
+  block += "3. For unsaved documents (Document Type: Unsaved Document):\n";
+  block += "   - Destructive live edits are blocked by default.\n";
+  block += "   - You MUST first call `word_live_list_open` to inspect all open documents.\n";
+  block += "   - If `word_live_list_open` shows exactly one open unsaved document:\n";
+  block += "     * You may proceed with the edit only after explicitly telling the user: 'I see only one unsaved document open. Please confirm if you want me to edit this document or if you prefer to save it first.'\n";
+  block += "   - If `word_live_list_open` shows two or more unsaved documents (or you cannot be sure which one is hosting the taskpane):\n";
+  block += "     * You MUST fail closed and stop immediately. Politely ask the user to save the target document first or close all other unsaved documents so the target can be uniquely identified.\n";
+  block += "4. Mismatch Prevention:\n";
+  block += "   - Do not perform any mutation if the actual document's content/structure on disk/Word does not correspond to the 'Fresh Text Hash' and preview details above.\n";
+
+  return block;
 }
 
 // Reads the full text of the currently-open Word document via the Word JS API
@@ -755,6 +858,9 @@ function buildPromptParts(text, documentContext, selectedText, hiddenInstruction
   if (documentContext) {
     hidden.push(documentContextHiddenBlock(documentContext));
   }
+
+  const docText = lastDocumentText || documentContext || "";
+  hidden.push(buildDocumentIdentityBlock(docText));
   if (selectedText) {
     hidden.push(
       "Context: the user currently has the text below highlighted/selected in the document, right now, as of " +
@@ -978,8 +1084,8 @@ async function deriveLibraryPromptIdeas() {
     // togglePromptIdeas pre-checks this case to show a specific message.
     return [];
   }
-  const documentContext = await getActiveDocumentText();
-  if (!documentContext || !documentContext.trim()) {
+  const { id: sid, isNew } = await ensureSession();
+  if (!lastDocumentText || !lastDocumentText.trim()) {
     return [];
   }
 
@@ -987,10 +1093,9 @@ async function deriveLibraryPromptIdeas() {
   // longer than the timeout on a large document) are intentionally left to
   // propagate to togglePromptIdeas, which shows them as a visible error
   // instead of the panel silently going blank with no explanation.
-  const { id: sid, isNew } = await ensureSession();
   const raw = await sendToOpenCodeBlocking(
     sid,
-    buildPromptIdeasParts(isNew ? documentContext : null, isNew ? getSavedCustomization() : null, library),
+    buildPromptIdeasParts(isNew ? lastDocumentText : null, isNew ? getSavedCustomization() : null, library),
     150000
   );
   const match = raw.match(PROMPT_IDEAS_MARKER_RE);
