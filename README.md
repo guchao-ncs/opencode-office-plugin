@@ -14,13 +14,13 @@ hand-rolled "run arbitrary script" tool).
 ## Architecture
 
 ```
-Word task pane (Office.js, https://localhost:3000)
+Word/PowerPoint task pane (Office.js, https://localhost:3000)
         │ fetch()
         ▼
 opencode serve --port 4098 --cors https://localhost:3000
         │ stdio (local MCP server, declared in opencode.json)
-        ▼
-word-mcp-live (uvx) ── win32com ──► Word.Application (already-open document)
+        ├──► word-mcp-live (uv) ── win32com ──► Word.Application (already-open document)
+        └──► ppt-mcp (uvx) ─────── win32com ──► PowerPoint.Application (already-open presentation)
 ```
 
 The task pane talks directly to OpenCode's real REST API
@@ -32,10 +32,11 @@ server for the full OpenAPI spec), not a custom backend.
 | Tool | Why | Check |
 |---|---|---|
 | Node.js 18+ | builds/serves the task pane | `node --version` |
-| Python 3.11+ | required by `word-mcp-live` | `python --version` |
-| [`uv`/`uvx`](https://docs.astral.sh/uv/) | runs `word-mcp-live` in an isolated env | `uvx --version` |
+| Python 3.11+ | required by automation tooling | `python --version` |
+| [`uv`/`uvx`](https://docs.astral.sh/uv/) | runs the MCP servers in isolated envs | `uvx --version` |
 | [`opencode` CLI](https://opencode.ai) | the agent runtime (`opencode-ai` on npm) | `opencode --version` |
-| Microsoft Word (desktop, Windows) | the automation target | — |
+| Microsoft Word (desktop, Windows) | the Word automation target | — |
+| Microsoft PowerPoint (desktop, Windows) | the PowerPoint automation target | — |
 
 You also need an OpenCode LLM provider configured (`opencode auth login`, or
 edit `~/.config/opencode/opencode.jsonc`) — `opencode providers` should list
@@ -139,31 +140,38 @@ opencode serve --port 4098 --hostname 127.0.0.1 --cors https://localhost:3000
 npm start
 ```
 
-Before asking the assistant to edit a document, make sure a Word document is
-actually open — `word-mcp-live` attaches to the active Word instance via
-`GetActiveObject`; it does not launch Word itself.
+Before asking the assistant to edit a document or presentation, make sure the target application (Word or PowerPoint) is actually open — the MCP servers attach to active instances via COM `GetActiveObject`; they do not launch the applications themselves.
 
 To stop: `npm stop` (unloads the add-in), then Ctrl+C the `opencode serve`
 terminal.
 
-## Word automation (`opencode.json`)
+## Word & PowerPoint Automation (`opencode.json`)
+
+Both automation targets are configured as local MCP servers inside `opencode.json`:
 
 ```json
 {
   "mcp": {
     "word": {
       "type": "local",
-      "command": ["uvx", "--from", "word-mcp-live", "word_mcp_server"],
-      "enabled": true
+      "command": ["uv", "run", "--with", "word-mcp-live", "scripts/word_mcp_launcher.py"],
+      "enabled": true,
+      "timeout": 90000
+    },
+    "powerpoint": {
+      "type": "local",
+      "command": ["uvx", "ppt-mcp"],
+      "enabled": true,
+      "timeout": 90000
     }
   }
 }
 ```
 
-Note the command: the PyPI package is `word-mcp-live`, but the executable it
-installs is `word_mcp_server` — `uvx word-mcp-live` (without `--from`) fails
-because no executable of that exact name exists. Verify the tool is wired up
-correctly with:
+- **Word**: Uses `word-mcp-live` via a custom launcher script (`scripts/word_mcp_launcher.py`) that resolves the correct active document and applies robust bindings to avoid multi-document mismatch risks.
+- **PowerPoint**: Uses `ppt-mcp` spawned via `uvx ppt-mcp`. This server exposes tools to manipulate slides, add shapes, resize and format elements, and extract text.
+
+Verify that both tools are wired up correctly and showing as connected in the MCP registry:
 
 ```powershell
 opencode mcp list
@@ -245,6 +253,25 @@ the agent only acts on your own prompts, but worth knowing. (A per-path
 grant can't be applied at runtime because opencode's `PATCH /config`
 doesn't persist anything — see `tech-design-spec.md` §5.)
 
+## Targeting & Debugging PowerPoint vs Word
+
+The add-in manifest is configured to support both Microsoft Word and Microsoft PowerPoint. To choose which Office application you want to launch, side-load, and debug when running commands like `npm start` or `npm stop`, modify the `config` block in `package.json`:
+
+```json
+  "config": {
+    "app_to_debug": "powerpoint", // Set to "word" to debug Word, or "powerpoint" to debug PowerPoint
+    "app_type_to_debug": "desktop",
+    "dev_server_port": 3000
+  }
+```
+
+After changing `"app_to_debug"`, running `npm start` will automatically register the manifest and start the selected host application (Word or PowerPoint) on Windows desktop.
+
+To verify or test PowerPoint automation capabilities manually or through scripts:
+1. Ensure the active presentation is open.
+2. Start the background services using `.\scripts\start-background-services.ps1` (or manually run `opencode serve --port 4098`).
+3. Send requests targeting slide/shape elements inside the chat interface, and confirm the changes take effect on the presentation.
+
 ## Testing
 
 Each phase of this project has its own regression test under `tests/`.
@@ -289,12 +316,7 @@ is on PATH and `opencode.json` is present in the directory `opencode serve`
 / `opencode run` was launched from — OpenCode discovers project config
 relative to its working directory.
 
-**A Word edit request errors or times out.** Confirm a Word document is
-actually open (`word-mcp-live` needs `GetActiveObject` to find one). Also
-avoid running `opencode run ...` against a **locked Windows session** — a
-locked/inactive desktop can make Word's COM automation hang indefinitely
-with no error, since there's no interactive desktop to attach to; this was
-observed firsthand while building Phase 6's test.
+**A Word or PowerPoint edit request errors or times out.** Confirm the Word document or PowerPoint presentation is actually open (`word-mcp-live` or `ppt-mcp` needs `GetActiveObject` to find the active instance). Also avoid running `opencode run ...` against a **locked Windows session** — a locked/inactive desktop can make Office COM automation hang indefinitely with no error, since there's no interactive desktop to attach to; this was observed firsthand while building Phase 6's test.
 
 **`opencode run` in a script never returns.** If you've wrapped a Word
 automation call in a non-interactive script, give it a hard timeout (see

@@ -6,17 +6,16 @@
 You are an expert Senior Full-Stack Engineer and AI Solutions Architect. We are building a localized, non-administrative AI Document Assistant called "AI Assistant" via Vibe Coding.
 
 # Goal
-Create a production-ready, minimal viable product (MVP) that integrates an AI Agent (Open Code) side panel inside Microsoft office word without requiring M365 Global Admin permissions. The solution must support complex document formatting and style manipulation.
-
-If MVP is success, we may expand the side panel to MS Excel and Powerpoint.
+Create a production-ready, minimal viable product (MVP) that integrates an AI Agent (Open Code) side panel inside Microsoft Office Word and PowerPoint without requiring M365 Global Admin permissions. The solution must support complex document formatting, style manipulation, slide creation, and shape layout controls.
 
 # Architectural Constraints (Strict)
 1. Non-Admin Deployment: Must use Office Add-in local Side-loading (Manifest.xml via Trusted Catalogs). No tenant-level deployment.
 2. Security & Data Privacy: All components must run on `localhost`. Front-end side panel communicates with the back-end via local HTTP/WebSocket. Zero enterprise data leaks.
 3. Tech Stack: 
-   - Front-end: Office.js SDK + Vanilla JS (Phase 1; React deferred to a later Excel/PowerPoint expansion phase), served locally over HTTPS via `office-addin-dev-certs` (official Microsoft cert tooling, replaces raw `mkcert`).
-   - Back-end/Agent: OpenCode Core running as a real local server (`opencode serve`, default `http://127.0.0.1:4096`, session/message REST API + OpenAPI spec at `/doc` — **not** an OpenAI-style `/v1/chat` endpoint).
+   - Front-end: Office.js SDK + Vanilla JS (Phase 1; React deferred to a later Excel expansion phase), served locally over HTTPS via `office-addin-dev-certs` (official Microsoft cert tooling, replaces raw `mkcert`).
+   - Back-end/Agent: OpenCode Core running as a real local server (`opencode serve`, default `http://127.0.0.1:4098`, session/message REST API + OpenAPI spec at `/doc` — **not** an OpenAI-style `/v1/chat` endpoint).
    - Word Automation: `word-mcp-live` (open-source MCP server, MIT license, github.com/ykarapazar/word-mcp-live), registered as a local MCP server in `opencode.json` and spawned by OpenCode itself over stdio via `uvx --from word-mcp-live word_mcp_server` (the PyPI package `word-mcp-live` provides the `word_mcp_server` executable, not a same-named one). Exposes a fixed, auditable set of live Word automation tools — no custom "OfficeMCP" proxy layer and no open arbitrary-code-execution tool. The upstream project now documents 124 total tools, including Windows COM live tools and macOS JXA live tools; this add-in's production support target remains Windows desktop Word until macOS is explicitly tested.
+   - PowerPoint Automation: `ppt-mcp` (spawned via `["uvx", "ppt-mcp"]`), registered as a local MCP server in `opencode.json` and spawned by OpenCode itself over stdio. Exposes tools for slide and shape manipulation (such as adding, deleting, and updating slides, adding and formatting shapes, manipulating text inside shapes, and positioning/resizing elements) via Windows COM automation.ted.
 
 ---
 
@@ -44,28 +43,43 @@ If MVP is success, we may expand the side panel to MS Excel and Powerpoint.
 - If any required capability is missing from word-mcp-live's tool set, extend it there (upstream/fork) rather than reintroducing an arbitrary-code-exec tool.
 - Requires Word to already be open (COM `GetActiveObject` on Windows); word-mcp-live does not launch Word itself. An optional standalone `scripts/verify_word_com.py` (plain `pywin32`, `GetActiveObject("Word.Application")`) may be kept as a debugging aid, separate from the MCP tool surface.
 
-### FR-4: Bind Agent Context to the Same Word Document Before Mutation
-- The add-in must treat "the current document" as the document hosting the task pane, not merely whichever Word document is active when COM automation runs.
+### FR-3b: PowerPoint Automation via `ppt-mcp` (Slide & Shape Manipulation)
+- Register `ppt-mcp` as a local MCP server in `opencode.json` (`"type": "local"`, `"command": ["uvx", "ppt-mcp"]`), spawned by OpenCode itself over stdio.
+- The PowerPoint Windows COM automation tool set (`pywin32`/COM against open PowerPoint presentations) exposes capabilities to interact with the active PowerPoint instance and perform slide and shape manipulation:
+  - Slide Operations:
+    - Listing all slides in the active presentation (retrieving indices, layout types, and structures).
+    - Adding new slides with standard layouts (e.g., Title Slide, Blank, Title & Content) or custom structures.
+    - Deleting existing slides by index.
+    - Rearranging slides and finding slides by name or content.
+  - Shape Manipulation:
+    - Adding various shape types (textboxes, rectangles, ellipses, lines, etc.) to a specific slide.
+    - Setting the position (`Left`, `Top`) and size (`Width`, `Height`) of shapes on a slide.
+    - Reading/extracting text from shapes inside a slide.
+    - Writing, appending, or replacing text content in shapes.
+    - Formatting text inside shapes (font size, color, bold, alignment).
+- Requires PowerPoint to already be open (COM `GetActiveObject` on Windows). The launcher script `scripts/powerpoint_mcp_launcher.py` provides a wrapper to resolve the correct presentation instance and handle multi-presentation environments.
+
+### FR-4: Bind Agent Context to the Same Document Before Mutation
+- The add-in must treat "the current document" as the document hosting the task pane, not merely whichever Word/PowerPoint document is active when COM automation runs.
 - Before any live-editing MCP tool is used, the hidden prompt must include a document identity block captured from Office.js:
   - `Office.context.document.url` where available (saved documents).
-  - A fallback display name and an add-in-generated session nonce for unsaved documents, with the UI warning that unsaved duplicate `Document1`-style files cannot be safely disambiguated.
-  - A fresh text hash/length/preview captured from `Word.run` for mismatch detection.
-- The agent must be instructed to pass the bound file name/path into every `word_live_*` MCP call when available. Upstream `word-mcp-live` live tools accept an optional `filename`; leaving it null means "active document" and is allowed only after an explicit single-open-document check.
-- For saved documents, the preferred guard flow is:
-  1. Call `word_live_list_open`.
-  2. Match the add-in-provided URL/path or document name to exactly one open Word document.
-  3. Use that matched value as `filename` for all subsequent live tool calls.
+  - A fallback display name and an add-in-generated session nonce for unsaved documents, with the UI warning that unsaved duplicate `Document1` or `Presentation1` files cannot be safely disambiguated.
+  - A fresh text hash/length/preview captured from `Word.run` (or delegated to `ppt-mcp` for PowerPoint) for mismatch detection.
+- The agent must be instructed to pass the bound file name/path into every `word_live_*` or `ppt_live_*` MCP call when available. Leaving it null/omitted is allowed only after an explicit single-open-document check.
+- For saved documents/presentations, the preferred guard flow is:
+  1. Call `word_live_list_open` or equivalent PowerPoint list tool.
+  2. Match the add-in-provided URL/path or document/presentation name to exactly one open window.
+  3. Use that matched value as `filename` for subsequent live tool calls.
   4. If no exact match or multiple matches exist, stop and ask the user to activate/save/close duplicates rather than editing.
-- For a newly created unsaved document (`Office.context.document.url` empty/null, typically shown by Word as `Document1`, `Document2`, etc.), the safe behavior is:
+- For a newly created unsaved document/presentation (`Office.context.document.url` empty/null), the safe behavior is:
   - Read-only actions are allowed because Office.js reads are scoped to the taskpane-hosting document.
-  - Destructive live MCP edits are blocked by default, with a clear prompt asking the user to save the document first or close other unsaved Word documents.
-  - A destructive edit may proceed without saving only when `word_live_list_open` shows exactly one open unsaved document and the user explicitly confirms it is the intended target for this turn.
-  - If two or more unsaved documents are open, the assistant must fail closed and ask the user to save the target document before editing. Do not rely on `Document1`/`Document2` display names or Word focus alone.
-  - Optional stronger binding for a later implementation: write an add-in-generated nonce into a hidden custom document property, bookmark, or content control using Office.js, then require MCP to verify that marker before editing. This improves unsaved-document binding but must be treated as a real document mutation and should be disclosed/kept hidden from visible content.
-- The task pane should reset the OpenCode `sessionId` when the document identity or full-document text hash changes, so stale context from a previous document cannot survive into a new editing turn.
+  - Destructive live MCP edits are blocked by default, with a clear prompt asking the user to save the document/presentation first or close other unsaved documents/presentations.
+  - A destructive edit may proceed without saving only when the list tool shows exactly one open unsaved file and the user explicitly confirms it is the intended target for this turn.
+  - If two or more unsaved documents/presentations are open, the assistant must fail closed and ask the user to save the target document before editing.
+- The task pane should reset the OpenCode `sessionId` when the document/presentation identity or text hash changes, so stale context from a previous document cannot survive into a new editing turn.
 
 ## 2. System Architecture Workflow
-User inputs prompt in Side Panel UI -> Front-end captures the hosting document's identity/content hash via Office.js -> Front-end POSTs to the local OpenCode REST API (`opencode serve`, `http://127.0.0.1:4096`) -> OpenCode processes intent via LLM -> before mutation, the agent validates the target with `word_live_list_open` and passes a matched `filename` to `word-mcp-live` live tools -> `word-mcp-live` executes platform live automation (Windows COM in the production target) -> Word physically mutates the bound document -> Response returns through the OpenCode session API to the Side Panel UI.
+User inputs prompt in Side Panel UI -> Front-end captures the hosting document's/presentation's identity via Office.js -> Front-end POSTs to the local OpenCode REST API (`opencode serve`, `http://127.0.0.1:4098`) -> OpenCode processes intent via LLM -> before mutation, the agent validates the target (using `word_live_list_open` or PowerPoint equivalent) and passes a matched `filename` to MCP live tools (`word-mcp-live` or `ppt-mcp`) -> The MCP server executes platform live automation (Windows COM in the production target) -> Word or PowerPoint physically mutates the bound document/presentation -> Response returns through the OpenCode session API to the Side Panel UI.
 
 ---
 
